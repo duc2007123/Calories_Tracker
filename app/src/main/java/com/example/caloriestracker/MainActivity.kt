@@ -4,8 +4,6 @@ import android.app.Activity
 import android.app.DatePickerDialog
 import android.content.Context
 import android.content.SharedPreferences
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,8 +14,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -141,7 +141,7 @@ data class RawIngredient(
     val unitType: UnitType,
     val unitName: String,
     val defaultAmount: Float,
-    val baseMacro: MacroNutrient, // per 100g if GRAM, per 1 unit if COUNT
+    val baseMacro: MacroNutrient,
     val icon: String = "🥩"
 ) {
     fun calculateMacro(amount: Float): MacroNutrient {
@@ -170,9 +170,11 @@ data class WorkoutItem(
     val detail: String,
     val met: Float,
     val durationMin: Float,
+    val manualCalories: Float = 0f,
     val isCompleted: Boolean = false
 ) {
     fun calculateBurnedCalories(userWeightKg: Float): Float {
+        if (manualCalories > 0f) return manualCalories
         return met * userWeightKg * (durationMin / 60f)
     }
 }
@@ -185,20 +187,19 @@ data class DailyLog(
     val activeCaloriesOut: Float = 0f
 ) {
     fun hasData(): Boolean = totalCaloriesIn > 0f || activeCaloriesOut > 0f || loggedFoods.isNotEmpty()
-
+    fun hasFoodData(): Boolean = totalCaloriesIn > 0f || loggedFoods.isNotEmpty()
+    fun hasWorkoutData(): Boolean = activeCaloriesOut > 0f
     fun getNaturalBurnCalories(userBmr: Float): Float = userBmr
-
     fun getTotalCaloriesOut(userBmr: Float): Float = getNaturalBurnCalories(userBmr) + activeCaloriesOut
-
     fun getCalorieBalance(userBmr: Float): Float = totalCaloriesIn - getTotalCaloriesOut(userBmr)
 }
 
 enum class Screen {
-    ONBOARDING, DASHBOARD, ADD_FOOD, CREATE_WORKOUT, ANALYTICS, PROFILE_SWITCHER, EDIT_PROFILE
+    ONBOARDING, DASHBOARD, ADD_FOOD, CREATE_WORKOUT, ANALYTICS, PROFILE_SWITCHER, EDIT_PROFILE, SET_SCHEDULE_FOOD, SET_SCHEDULE_WORKOUT
 }
 
 // =========================================================================================
-// 2. STATE HOLDER WITH SEARCH, RAW INGREDIENTS, MULTI-DAY WORKOUT & STREAK
+// 2. STATE HOLDER
 // =========================================================================================
 
 data class AppState(
@@ -216,6 +217,14 @@ data class AppState(
     val rawAmount: Float = 100f,
     val scannedImageUri: Uri? = null,
     val isScanningImage: Boolean = false,
+    val isProgressExpanded: Boolean = true,
+    // Workout temporary selection for scheduling
+    val tempWorkoutName: String = "",
+    val tempWorkoutCategory: WorkoutCategory = WorkoutCategory.GYM,
+    val tempWorkoutDetail: String = "",
+    val tempWorkoutMet: Float = 5.5f,
+    val tempWorkoutDuration: Float = 30f,
+    val tempWorkoutManualCal: Float = 0f,
     val backStack: List<Screen> = listOf(Screen.ONBOARDING)
 ) {
     val activeUser: UserProfile
@@ -232,12 +241,12 @@ data class AppState(
 }
 
 class CalorieTrackerStateHolder(private val context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("calorie_tracker_v8_storage", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = context.getSharedPreferences("calorie_tracker_v9_storage", Context.MODE_PRIVATE)
 
     private val _uiState = MutableStateFlow(AppState())
     val uiState: StateFlow<AppState> = _uiState.asStateFlow()
 
-    // 22+ MÓN ĂN DÂN DÃ & NGUYÊN LIỆU CƠ BẢN
+    // 22+ Món ăn & nguyên liệu cơ bản
     val rawFoodCatalog = listOf(
         RawIngredient("r1", "Thịt Lợn Nạc (Heo thăn)", "Thịt Heo", UnitType.GRAM, "g", 100f, MacroNutrient(26f, 0f, 4.5f), "🥩"),
         RawIngredient("r2", "Thịt Ba Chỉ Heo", "Thịt Heo", UnitType.GRAM, "g", 100f, MacroNutrient(16.5f, 0f, 21.5f), "🥓"),
@@ -263,7 +272,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
         RawIngredient("r22", "Lạc Luộc / Đậu Phộng", "Hạt", UnitType.GRAM, "g", 50f, MacroNutrient(6.8f, 10.5f, 11f), "🥜")
     )
 
-    // 18+ MÓN ĂN VIỆT NAM TRUYỀN THỐNG
+    // 18+ Món ăn Việt Nam
     val foodCatalog = listOf(
         FoodPreset("1", "Phở Bò Tái Nạm", "1 Bát vừa", "Món Nước", MacroNutrient(28f, 58f, 14f)),
         FoodPreset("2", "Cơm Tấm Sườn Bì Chả", "1 Đĩa đầy đủ", "Cơm", MacroNutrient(34f, 82f, 26f)),
@@ -285,35 +294,35 @@ class CalorieTrackerStateHolder(private val context: Context) {
         FoodPreset("18", "Sinh Tố Bơ Chuối", "1 Cốc 350ml", "Đồ Uống", MacroNutrient(6f, 48f, 16f))
     )
 
-    // 24+ BÀI TẬP GYM, MÔN THỂ THAO & CARDIO
+    // DANH MỤC CÁC BÀI TẬP GYM & THỂ THAO
     val workoutCatalog = listOf(
-        // GYM / THỂ HÌNH
-        WorkoutPreset("w1", "Đẩy ngực ngang (Bench Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 60f, "5:30", 25f, 5.5f, "Gym / Ngực"),
-        WorkoutPreset("w2", "Đẩy ngực dốc lên (Incline Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 50f, "5:30", 25f, 5.5f, "Gym / Ngực"),
-        WorkoutPreset("w3", "Kéo xô lưng (Lat Pulldown)", WorkoutCategory.GYM, "🏋️", 4, 12, 45f, "5:30", 25f, 5.0f, "Gym / Lưng"),
-        WorkoutPreset("w4", "Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, "🏋️", 4, 8, 80f, "5:30", 30f, 6.0f, "Gym / Chân"),
-        WorkoutPreset("w5", "Đạp đùi máy nghiêng (Leg Press)", WorkoutCategory.GYM, "🏋️", 4, 12, 100f, "5:30", 25f, 5.5f, "Gym / Chân"),
-        WorkoutPreset("w6", "Kéo lưng đùi (Deadlift)", WorkoutCategory.GYM, "🏋️", 3, 6, 90f, "5:30", 25f, 6.5f, "Gym / Toàn thân"),
-        WorkoutPreset("w7", "Đẩy vai tạ đơn (Shoulder Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 16f, "5:30", 20f, 5.0f, "Gym / Vai"),
-        WorkoutPreset("w8", "Cuốn tay trước (Bicep Curl)", WorkoutCategory.GYM, "🏋️", 3, 12, 12f, "5:30", 20f, 4.5f, "Gym / Tay"),
-        WorkoutPreset("w9", "Đẩy tay sau kéo cáp (Tricep Pushdown)", WorkoutCategory.GYM, "🏋️", 3, 12, 25f, "5:30", 20f, 4.5f, "Gym / Tay"),
-        WorkoutPreset("w10", "Gập bụng (Abdominal Crunch)", WorkoutCategory.GYM, "🏋️", 4, 20, 0f, "5:30", 15f, 4.0f, "Gym / Bụng"),
-        WorkoutPreset("w11", "Hít xà đơn (Pull-up)", WorkoutCategory.GYM, "🏋️", 4, 8, 0f, "5:30", 20f, 6.0f, "Gym / Lưng"),
-        WorkoutPreset("w12", "Chống đẩy / Hít đất (Push-up)", WorkoutCategory.GYM, "🏋️", 4, 15, 0f, "5:30", 20f, 5.0f, "Gym / Ngực"),
+        // GYM / TẠ
+        WorkoutPreset("w1", "Đẩy ngực ngang (Bench Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 60f, "5:30", 25f, 5.5f, "Gym"),
+        WorkoutPreset("w2", "Đẩy ngực dốc lên (Incline Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 50f, "5:30", 25f, 5.5f, "Gym"),
+        WorkoutPreset("w3", "Kéo xô lưng (Lat Pulldown)", WorkoutCategory.GYM, "🏋️", 4, 12, 45f, "5:30", 25f, 5.0f, "Gym"),
+        WorkoutPreset("w4", "Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, "🏋️", 4, 8, 80f, "5:30", 30f, 6.0f, "Gym"),
+        WorkoutPreset("w5", "Đạp đùi máy nghiêng (Leg Press)", WorkoutCategory.GYM, "🏋️", 4, 12, 100f, "5:30", 25f, 5.5f, "Gym"),
+        WorkoutPreset("w6", "Kéo lưng đùi (Deadlift)", WorkoutCategory.GYM, "🏋️", 3, 6, 90f, "5:30", 25f, 6.5f, "Gym"),
+        WorkoutPreset("w7", "Đẩy vai tạ đơn (Shoulder Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 16f, "5:30", 20f, 5.0f, "Gym"),
+        WorkoutPreset("w8", "Cuốn tay trước (Bicep Curl)", WorkoutCategory.GYM, "🏋️", 3, 12, 12f, "5:30", 20f, 4.5f, "Gym"),
+        WorkoutPreset("w9", "Gập bụng (Abdominal Crunch)", WorkoutCategory.GYM, "🏋️", 4, 20, 0f, "5:30", 15f, 4.0f, "Gym"),
+        WorkoutPreset("w10", "Hít xà đơn (Pull-up)", WorkoutCategory.GYM, "🏋️", 4, 8, 0f, "5:30", 20f, 6.0f, "Gym"),
+        WorkoutPreset("w11", "Hít đất / Chống đẩy (Push-up)", WorkoutCategory.GYM, "🏋️", 4, 15, 0f, "5:30", 20f, 5.0f, "Gym"),
 
-        // CÁC MÔN THỂ THAO & CARDIO NGOÀI TRỜI
-        WorkoutPreset("w13", "Bóng đá / Đá bóng (Football)", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Sân 7 người", 60f, 8.5f, "Thể thao"),
-        WorkoutPreset("w14", "Cầu lông (Badminton)", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Đấu đơn/đôi", 45f, 7.0f, "Thể thao"),
-        WorkoutPreset("w15", "Bơi lội (Swimming)", WorkoutCategory.CARDIO, "🏊", 1, 1, 0f, "Bơi sải/ếch", 45f, 8.0f, "Thể thao"),
-        WorkoutPreset("w16", "Bóng rổ (Basketball)", WorkoutCategory.CARDIO, "🏀", 1, 1, 0f, "Toàn sân", 60f, 7.5f, "Thể thao"),
-        WorkoutPreset("w17", "Đạp xe ngoài trời (Cycling)", WorkoutCategory.CARDIO, "🚴", 1, 1, 0f, "18-22 km/h", 45f, 7.5f, "Cardio"),
-        WorkoutPreset("w18", "Nhảy dây đốt mỡ (Jump Rope)", WorkoutCategory.CARDIO, "🪢", 1, 1, 0f, "120 nhịp/phút", 20f, 10.0f, "Cardio"),
-        WorkoutPreset("w19", "Đi bộ nhanh (Brisk Walking)", WorkoutCategory.CARDIO, "🚶", 1, 1, 0f, "Pace 9:30 (6.3 km/h)", 45f, 4.5f, "Cardio"),
-        WorkoutPreset("w20", "Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "Pace 5:30 (10.9 km/h)", 30f, 9.8f, "Cardio"),
-        WorkoutPreset("w21", "Quần vợt (Tennis)", WorkoutCategory.CARDIO, "🎾", 1, 1, 0f, "Đánh sân cứng", 60f, 7.3f, "Thể thao"),
-        WorkoutPreset("w22", "Bóng bàn (Table Tennis)", WorkoutCategory.CARDIO, "🏓", 1, 1, 0f, "Đối kháng", 45f, 4.5f, "Thể thao"),
-        WorkoutPreset("w23", "Boxing / Đấm bao cát / Võ", WorkoutCategory.CARDIO, "🥊", 1, 1, 0f, "Cường độ cao", 45f, 9.0f, "Thể thao"),
-        WorkoutPreset("w24", "Yoga / Giãn cơ (Stretching)", WorkoutCategory.CARDIO, "🧘", 1, 1, 0f, "Hít thở sâu", 45f, 3.0f, "Thư giãn")
+        // THỂ THAO / CHẠY
+        WorkoutPreset("w12", "Cầu lông đối kháng đôi", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Đấu đôi", 45f, 6.5f, "Thể thao"),
+        WorkoutPreset("w13", "Cầu lông đơn cường độ cao", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Đấu đơn", 45f, 7.5f, "Thể thao"),
+        WorkoutPreset("w14", "Bóng đá sân cỏ 7 người", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Thi đấu", 60f, 8.5f, "Thể thao"),
+        WorkoutPreset("w15", "Futsal / Bóng đá sân 5", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Cường độ cao", 50f, 9.0f, "Thể thao"),
+        WorkoutPreset("w16", "Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "5:30", 30f, 9.8f, "Chạy"),
+        WorkoutPreset("w17", "Chạy nhẹ nhàng hồi phục", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "6:30", 35f, 8.0f, "Chạy"),
+        WorkoutPreset("w18", "Đi bộ nhanh (Brisk Walking)", WorkoutCategory.CARDIO, "🚶", 1, 1, 0f, "9:30", 45f, 4.5f, "Chạy"),
+        WorkoutPreset("w19", "Bơi sải tốc độ cao", WorkoutCategory.CARDIO, "🏊", 1, 1, 0f, "Liên tục", 40f, 8.5f, "Bơi"),
+        WorkoutPreset("w20", "Bơi ếch vừa sức", WorkoutCategory.CARDIO, "🏊", 1, 1, 0f, "Vừa sức", 40f, 6.0f, "Bơi"),
+        WorkoutPreset("w21", "Đạp xe ngoài trời (18-22 km/h)", WorkoutCategory.CARDIO, "🚴", 1, 1, 0f, "20 km/h", 45f, 7.5f, "Đạp xe"),
+        WorkoutPreset("w22", "Nhảy dây đốt mỡ (Jump Rope)", WorkoutCategory.CARDIO, "🪢", 1, 1, 0f, "120 nhịp/p", 20f, 10.0f, "Cardio"),
+        WorkoutPreset("w23", "Boxing / Đấm bao cát", WorkoutCategory.CARDIO, "🥊", 1, 1, 0f, "Cường độ cao", 45f, 9.0f, "Võ thuật"),
+        WorkoutPreset("w24", "Bóng rổ toàn sân (Basketball)", WorkoutCategory.CARDIO, "🏀", 1, 1, 0f, "Toàn sân", 60f, 7.5f, "Thể thao")
     )
 
     init {
@@ -367,7 +376,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
 
         val activeId = prefs.getString("active_profile_id", loadedProfiles.first().id) ?: loadedProfiles.first().id
 
-        // Load Logs
+        // Load logs
         val userLogsMap = mutableMapOf<String, MutableMap<LocalDate, DailyLog>>()
         val logsJson = prefs.getString("user_logs_json", null)
         if (logsJson != null) {
@@ -418,7 +427,6 @@ class CalorieTrackerStateHolder(private val context: Context) {
             } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // Seed default logs if empty
         val activeLogMap = userLogsMap.getOrPut(activeId) { mutableMapOf() }
         if (activeLogMap.isEmpty()) {
             for (i in 365 downTo -30) {
@@ -430,13 +438,11 @@ class CalorieTrackerStateHolder(private val context: Context) {
                 val sampleFoods = if (isPast) {
                     listOf(
                         LoggedFoodItem(name = "Phở Bò Tái Nạm", portion = "1 Bát vừa", macro = MacroNutrient(28f, 58f, 14f)),
-                        LoggedFoodItem(name = "Cơm Tấm Sườn Bì Chả", portion = "1 Đĩa đầy đủ", macro = MacroNutrient(34f, 82f, 26f)),
-                        LoggedFoodItem(name = "Ức Gà Phi Lê", portion = "200g", macro = MacroNutrient(52f, 0f, 3f))
+                        LoggedFoodItem(name = "Cơm Tấm Sườn Bì Chả", portion = "1 Đĩa đầy đủ", macro = MacroNutrient(34f, 82f, 26f))
                     )
                 } else if (i == 0) {
                     listOf(
-                        LoggedFoodItem(name = "Phở Bò Tái Nạm", portion = "1 Bát vừa", macro = MacroNutrient(28f, 58f, 14f)),
-                        LoggedFoodItem(name = "Cơm Trắng", portion = "1 Bát", macro = MacroNutrient(4.2f, 44.5f, 0.5f))
+                        LoggedFoodItem(name = "Phở Bò Tái Nạm", portion = "1 Bát vừa", macro = MacroNutrient(28f, 58f, 14f))
                     )
                 } else emptyList()
 
@@ -471,6 +477,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
                                 detail = o.getString("detail"),
                                 met = o.getDouble("met").toFloat(),
                                 durationMin = o.getDouble("durationMin").toFloat(),
+                                manualCalories = o.optDouble("manualCalories", 0.0).toFloat(),
                                 isCompleted = o.getBoolean("isCompleted")
                             )
                         )
@@ -484,9 +491,8 @@ class CalorieTrackerStateHolder(private val context: Context) {
         if (mainUserWorkouts.isEmpty()) {
             mainUserWorkouts.addAll(
                 listOf(
-                    WorkoutItem("w1", activeId, today, WorkoutCategory.CARDIO, "Chạy bộ công viên", "Pace 5:45 • 30 phút", met = 9.8f, durationMin = 30f, isCompleted = true),
-                    WorkoutItem("w2", activeId, today, WorkoutCategory.GYM, "Bench Press (Đẩy ngực)", "4 sets x 10 reps (65kg)", met = 5.0f, durationMin = 25f, isCompleted = false),
-                    WorkoutItem("w3", activeId, today, WorkoutCategory.GYM, "Squat Barbell", "4 sets x 8 reps (80kg)", met = 6.0f, durationMin = 30f, isCompleted = false)
+                    WorkoutItem("w1", activeId, today, WorkoutCategory.CARDIO, "Chạy bộ ngoài trời", "Tốc độ: 5:30 • 30 phút", met = 9.8f, durationMin = 30f, isCompleted = true),
+                    WorkoutItem("w2", activeId, today, WorkoutCategory.GYM, "Đẩy ngực ngang (Bench Press)", "4 sets x 10 reps (60kg)", met = 5.5f, durationMin = 25f, isCompleted = false)
                 )
             )
         }
@@ -509,7 +515,6 @@ class CalorieTrackerStateHolder(private val context: Context) {
         editor.putBoolean("is_onboarded", state.isOnboarded)
         editor.putString("active_profile_id", state.activeProfileId)
 
-        // Save Profiles
         val pArr = JSONArray()
         state.profiles.forEach { p ->
             val o = JSONObject()
@@ -531,7 +536,6 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
         editor.putString("profiles_json", pArr.toString())
 
-        // Save Logs
         val logsRoot = JSONObject()
         state.userLogs.forEach { (uId, map) ->
             val uObj = JSONObject()
@@ -562,7 +566,6 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
         editor.putString("user_logs_json", logsRoot.toString())
 
-        // Save Workouts
         val wRoot = JSONObject()
         state.userWorkouts.forEach { (uId, list) ->
             val arr = JSONArray()
@@ -575,6 +578,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
                 o.put("detail", w.detail)
                 o.put("met", w.met)
                 o.put("durationMin", w.durationMin)
+                o.put("manualCalories", w.manualCalories)
                 o.put("isCompleted", w.isCompleted)
                 arr.put(o)
             }
@@ -587,32 +591,33 @@ class CalorieTrackerStateHolder(private val context: Context) {
 
     // NAVIGATION
     fun navigateTo(screen: Screen) {
-        _uiState.update {
-            it.copy(
-                backStack = it.backStack + screen,
-                previewMacro = null,
-                previewFoodName = "",
-                selectedFoodPreset = null,
-                selectedRawIngredient = null
-            )
-        }
+        _uiState.update { it.copy(backStack = it.backStack + screen) }
     }
 
     fun navigateBack(): Boolean {
         val stack = _uiState.value.backStack
         if (stack.size > 1) {
-            _uiState.update {
-                it.copy(
-                    backStack = stack.dropLast(1),
-                    previewMacro = null,
-                    previewFoodName = "",
-                    selectedFoodPreset = null,
-                    selectedRawIngredient = null
-                )
-            }
+            _uiState.update { it.copy(backStack = stack.dropLast(1)) }
             return true
         }
         return false
+    }
+
+    fun toggleProgressExpanded() {
+        _uiState.update { it.copy(isProgressExpanded = !it.isProgressExpanded) }
+    }
+
+    fun setTempWorkout(name: String, category: WorkoutCategory, detail: String, met: Float, duration: Float, manualCal: Float) {
+        _uiState.update {
+            it.copy(
+                tempWorkoutName = name,
+                tempWorkoutCategory = category,
+                tempWorkoutDetail = detail,
+                tempWorkoutMet = met,
+                tempWorkoutDuration = duration,
+                tempWorkoutManualCal = manualCal
+            )
+        }
     }
 
     // MULTI-USER MANAGEMENT
@@ -680,11 +685,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
         _uiState.update { it.copy(selectedDate = date) }
     }
 
-    fun jumpDateByDays(days: Long) {
-        _uiState.update { it.copy(selectedDate = it.selectedDate.plusDays(days)) }
-    }
-
-    // GHOST BAR & RAW / PRESET SELECTION
+    // GHOST BAR & SELECTION
     fun selectFoodPreset(preset: FoodPreset?) {
         if (preset == null) {
             _uiState.update { it.copy(selectedFoodPreset = null, previewMacro = null, previewFoodName = "") }
@@ -767,13 +768,12 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
     }
 
-    fun commitFoodLog(foodName: String = "Món ăn", macro: MacroNutrient) {
+    fun commitFoodLog(foodName: String = "Món ăn", macro: MacroNutrient, targetDate: LocalDate = _uiState.value.selectedDate) {
         val state = _uiState.value
         val uId = state.activeProfileId
-        val date = state.selectedDate
 
-        val currentLog = state.currentDailyLog
-        val updatedFoods = currentLog.loggedFoods + LoggedFoodItem(
+        val targetLog = state.userLogs[uId]?.get(targetDate) ?: DailyLog(date = targetDate)
+        val updatedFoods = targetLog.loggedFoods + LoggedFoodItem(
             name = foodName.ifBlank { "Món ăn" },
             portion = if (state.selectedRawIngredient != null) {
                 if (state.selectedRawIngredient.unitType == UnitType.GRAM) "${state.rawAmount.toInt()}g" else "${state.rawAmount.toInt()} ${state.selectedRawIngredient.unitName}"
@@ -783,17 +783,17 @@ class CalorieTrackerStateHolder(private val context: Context) {
             macro = macro
         )
 
-        val updatedMacros = currentLog.currentMacros + macro
-        val updatedCaloriesIn = currentLog.totalCaloriesIn + macro.calories
+        val updatedMacros = targetLog.currentMacros + macro
+        val updatedCaloriesIn = targetLog.totalCaloriesIn + macro.calories
 
-        val newDailyLog = currentLog.copy(
+        val newDailyLog = targetLog.copy(
             loggedFoods = updatedFoods,
             currentMacros = updatedMacros,
             totalCaloriesIn = updatedCaloriesIn
         )
 
         val userDateMap = state.userLogs[uId]?.toMutableMap() ?: mutableMapOf()
-        userDateMap[date] = newDailyLog
+        userDateMap[targetDate] = newDailyLog
 
         val updatedUserLogs = state.userLogs.toMutableMap()
         updatedUserLogs[uId] = userDateMap
@@ -811,13 +811,56 @@ class CalorieTrackerStateHolder(private val context: Context) {
         navigateBack()
     }
 
-    // WORKOUTS - MULTI-DAY SCHEDULE SUPPORT
+    fun commitFoodLogMultiDays(foodName: String, macro: MacroNutrient, dates: List<LocalDate>) {
+        val state = _uiState.value
+        val uId = state.activeProfileId
+        val userDateMap = state.userLogs[uId]?.toMutableMap() ?: mutableMapOf()
+
+        dates.forEach { targetDate ->
+            val targetLog = userDateMap[targetDate] ?: DailyLog(date = targetDate)
+            val updatedFoods = targetLog.loggedFoods + LoggedFoodItem(
+                name = foodName.ifBlank { "Món ăn" },
+                portion = if (state.selectedRawIngredient != null) {
+                    if (state.selectedRawIngredient.unitType == UnitType.GRAM) "${state.rawAmount.toInt()}g" else "${state.rawAmount.toInt()} ${state.selectedRawIngredient.unitName}"
+                } else if (state.selectedFoodPreset != null) {
+                    "${state.previewPortionMultiplier} phần"
+                } else "1 khẩu phần",
+                macro = macro
+            )
+            val updatedMacros = targetLog.currentMacros + macro
+            val updatedCaloriesIn = targetLog.totalCaloriesIn + macro.calories
+
+            userDateMap[targetDate] = targetLog.copy(
+                loggedFoods = updatedFoods,
+                currentMacros = updatedMacros,
+                totalCaloriesIn = updatedCaloriesIn
+            )
+        }
+
+        val updatedUserLogs = state.userLogs.toMutableMap()
+        updatedUserLogs[uId] = userDateMap
+
+        _uiState.update {
+            it.copy(
+                userLogs = updatedUserLogs,
+                previewMacro = null,
+                previewFoodName = "",
+                selectedFoodPreset = null,
+                selectedRawIngredient = null,
+                backStack = listOf(Screen.DASHBOARD)
+            )
+        }
+        saveStateToDisk()
+    }
+
+    // WORKOUTS
     fun addWorkoutScheduleMultiDays(
         name: String,
         category: WorkoutCategory,
         detail: String,
         met: Float,
         durationMin: Float,
+        manualCalories: Float = 0f,
         dates: List<LocalDate>
     ) {
         val state = _uiState.value
@@ -829,10 +872,11 @@ class CalorieTrackerStateHolder(private val context: Context) {
                 userId = uId,
                 date = date,
                 category = category,
-                title = name.ifBlank { if (category == WorkoutCategory.GYM) "Tập Gym" else "Chạy bộ" },
+                title = name.ifBlank { if (category == WorkoutCategory.GYM) "Tập Gym" else "Vận động" },
                 detail = detail,
                 met = met,
                 durationMin = durationMin,
+                manualCalories = manualCalories,
                 isCompleted = false
             )
         }
@@ -841,9 +885,13 @@ class CalorieTrackerStateHolder(private val context: Context) {
         val updatedUserWorkouts = state.userWorkouts.toMutableMap()
         updatedUserWorkouts[uId] = userWorkoutList.toMutableList()
 
-        _uiState.update { it.copy(userWorkouts = updatedUserWorkouts) }
+        _uiState.update {
+            it.copy(
+                userWorkouts = updatedUserWorkouts,
+                backStack = listOf(Screen.DASHBOARD)
+            )
+        }
         saveStateToDisk()
-        navigateBack()
     }
 
     fun toggleWorkoutCompletion(workoutId: String) {
@@ -886,7 +934,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
     }
 
-    // ANALYTICS CALCULATION
+    // ANALYTICS
     fun calculateAnalytics(days: Int): AnalyticsResult {
         val state = _uiState.value
         val uId = state.activeProfileId
@@ -918,30 +966,24 @@ class CalorieTrackerStateHolder(private val context: Context) {
 
             when {
                 abs(pctDiff) <= 12f -> {
-                    append("• Đạt chuẩn dung sai WHO: Khẩu phần ăn dao động trong khoảng tự nhiên lành mạnh (±10-12%). Sự cân đối tương đối này rất bền vững, không cần ép ăn chuẩn xác từng gram mỗi ngày!\n")
+                    append("• Đạt chuẩn dung sai WHO: Khẩu phần ăn dao động trong khoảng tự nhiên lành mạnh (±10-12%).\n")
                 }
                 pctDiff < -12f -> {
-                    append("• Mức nạp đang thấp hơn khuyến nghị (-${abs(diff).toInt()} kcal). WHO khuyến cáo tránh cắt giảm calo quá sâu liên tục để bảo toàn khối cơ và hệ miễn dịch.\n")
+                    append("• Mức nạp đang thấp hơn khuyến nghị (-${abs(diff).toInt()} kcal).\n")
                 }
                 else -> {
-                    append("• Mức nạp thặng dư trung bình (+${diff.toInt()} kcal/ngày). Nếu không phải giai đoạn tăng cơ, bạn có thể bù đắp bằng các buổi tập thể thao 3-4 lần/tuần.\n")
+                    append("• Mức nạp thặng dư trung bình (+${diff.toInt()} kcal/ngày). Có thể bù đắp bằng các buổi tập thể thao 3-4 lần/tuần.\n")
                 }
             }
 
             if (stdDev > 450f) {
-                append("• Nhịp sinh học: Năng lượng giữa các ngày có độ dao động khá cao. Cố gắng ăn đúng bữa để dạ dày và trao đổi chất làm việc ổn định.")
+                append("• Nhịp sinh học: Năng lượng giữa các ngày dao động khá cao.")
             } else {
-                append("• Tính đều đặn: Thói quen ăn uống của bạn rất ổn định qua các ngày (rất đáng khen ngợi!).")
+                append("• Tính đều đặn: Thói quen ăn uống rất ổn định qua các ngày!")
             }
         }
 
-        return AnalyticsResult(
-            days = days,
-            meanCalories = mean,
-            stdDev = stdDev,
-            adviceText = advice,
-            logs = logsList
-        )
+        return AnalyticsResult(days, mean, stdDev, advice, logsList)
     }
 }
 
@@ -954,7 +996,7 @@ data class AnalyticsResult(
 )
 
 // =========================================================================================
-// 3. COMPOSE UI COMPONENTS - ULTRA MODERN HIGH-AESTHETIC REDESIGN
+// 3. MAIN ACTIVITY & SCREENS
 // =========================================================================================
 
 class MainActivity : ComponentActivity() {
@@ -967,7 +1009,6 @@ class MainActivity : ComponentActivity() {
 
             var showExitDialog by remember { mutableStateOf(false) }
 
-            // BACK HANDLER
             BackHandler(enabled = true) {
                 val handled = stateHolder.navigateBack()
                 if (!handled) {
@@ -1000,10 +1041,10 @@ class MainActivity : ComponentActivity() {
 
             MaterialTheme(
                 colorScheme = darkColorScheme(
-                    primary = Color(0xFF10B981),      // Neon Emerald
-                    secondary = Color(0xFF38BDF8),    // Electric Blue
-                    tertiary = Color(0xFFF59E0B),     // Vibrant Amber
-                    background = Color(0xFF090D16),   // Deep Midnight
+                    primary = Color(0xFF10B981),      // Emerald Green
+                    secondary = Color(0xFF38BDF8),    // Sky Blue
+                    tertiary = Color(0xFFF59E0B),     // Amber Gold
+                    background = Color(0xFF090D16),   // Deep Dark Midnight
                     surface = Color(0xFF151C2C),      // Polished Slate Surface
                     surfaceVariant = Color(0xFF1E283D),
                     onPrimary = Color(0xFF041E15),
@@ -1021,8 +1062,10 @@ class MainActivity : ComponentActivity() {
                         Screen.PROFILE_SWITCHER -> ProfileSwitcherScreen(stateHolder, uiState)
                         Screen.ADD_FOOD -> AddFoodScreen(stateHolder, uiState)
                         Screen.CREATE_WORKOUT -> CreateWorkoutScreen(stateHolder, uiState)
+                        Screen.SET_SCHEDULE_FOOD -> SetScheduleFoodScreen(stateHolder, uiState)
+                        Screen.SET_SCHEDULE_WORKOUT -> SetScheduleWorkoutScreen(stateHolder, uiState)
                         Screen.ANALYTICS -> AnalyticsScreen(stateHolder)
-                        Screen.EDIT_PROFILE -> EditProfileScreen(stateHolder, uiState)
+                        Screen.EDIT_PROFILE -> {}
                     }
                 }
             }
@@ -1197,7 +1240,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.2. DASHBOARD SCREEN (WITH STREAK FLAME ON DAYS WITH DATA & DATE PICKER)
+    // 3.2. DASHBOARD SCREEN
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -1219,7 +1262,6 @@ class MainActivity : ComponentActivity() {
 
         val daysDifference = java.time.temporal.ChronoUnit.DAYS.between(selectedDate, today)
 
-        // Native Android Date Picker
         val openDatePicker = {
             val dpd = DatePickerDialog(
                 context,
@@ -1254,13 +1296,12 @@ class MainActivity : ComponentActivity() {
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // TOP HEADER: PROFILE SWITCHER & CLEAN DATE PICKER BUTTON
+                // TOP HEADER: PROFILE SWITCHER & DATE PICKER
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Profile Switcher Chip
                     Surface(
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
@@ -1283,7 +1324,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // DATE CONTROLS: "HÔM NAY" + "📅 CHỌN NGÀY CỤ THỂ"
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1299,7 +1339,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // DATE PICKER MODAL TRIGGER
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
@@ -1321,7 +1360,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // CURRENT DATE TITLE & STATUS BADGE
+                // CURRENT DATE TITLE (KHÔNG CÓ CHỮ QUÁ KHỨ / TƯƠNG LAI)
                 val formatter = DateTimeFormatter.ofPattern("EEEE, 'ngày' dd/MM/yyyy", java.util.Locale("vi"))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1331,14 +1370,14 @@ class MainActivity : ComponentActivity() {
                     Column {
                         Text(selectedDate.format(formatter), fontSize = 14.sp, fontWeight = FontWeight.Black, color = Color.White)
                         val relativeText = when {
-                            daysDifference == 0L -> "Hôm nay • Đang diễn ra"
-                            daysDifference > 0L -> "$daysDifference ngày trước (Quá khứ)"
-                            else -> "${abs(daysDifference)} ngày tới (Tương lai)"
+                            daysDifference == 0L -> "Hôm nay"
+                            daysDifference > 0L -> "$daysDifference ngày trước"
+                            else -> "${abs(daysDifference)} ngày tới"
                         }
                         Text(
                             relativeText,
                             fontSize = 11.sp,
-                            color = if (daysDifference == 0L) MaterialTheme.colorScheme.primary else if (daysDifference > 0L) Color(0xFF94A3B8) else MaterialTheme.colorScheme.tertiary,
+                            color = if (daysDifference == 0L) MaterialTheme.colorScheme.primary else Color(0xFF94A3B8),
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -1346,7 +1385,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // 7-DAY DYNAMIC HORIZONTAL CALENDAR STRIP (STREAK FLAME LOGIC)
+                // 7-DAY DYNAMIC HORIZONTAL CALENDAR STRIP (STREAK: 🥗 Ăn đủ, 🔥 Đốt đủ, 🥗🔥 Cả hai)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1357,9 +1396,17 @@ class MainActivity : ComponentActivity() {
                         val date = selectedDate.plusDays(i.toLong())
                         val isSelected = i == 0
                         val dayLog = uiState.userLogs[activeUser.id]?.get(date) ?: DailyLog(date = date)
+                        val dayWorkouts = (uiState.userWorkouts[activeUser.id] ?: emptyList()).filter { it.date == date }
 
-                        // NGÀY NÀO Ở HIỆN TẠI HOẶC QUÁ KHỨ CÓ GHI DỮ LIỆU THÌ HIỆN NGỌN LỬA STREAK
-                        val hasRecordedData = !date.isAfter(today) && dayLog.hasData()
+                        val hasFood = dayLog.hasFoodData()
+                        val hasWorkout = dayLog.hasWorkoutData() || dayWorkouts.any { it.isCompleted }
+
+                        val streakIcon = when {
+                            hasFood && hasWorkout -> "🥗🔥"
+                            hasFood -> "🥗"
+                            hasWorkout -> "🔥"
+                            else -> "•"
+                        }
 
                         val dayOfWeekVi = when (date.dayOfWeek) {
                             DayOfWeek.MONDAY -> "T2"
@@ -1373,7 +1420,7 @@ class MainActivity : ComponentActivity() {
 
                         Surface(
                             modifier = Modifier
-                                .width(50.dp)
+                                .width(52.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .clickable { stateHolder.selectDate(date) },
                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
@@ -1398,8 +1445,8 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    if (hasRecordedData) "🔥" else "•",
-                                    fontSize = 11.sp,
+                                    streakIcon,
+                                    fontSize = if (streakIcon.length > 1) 10.sp else 11.sp,
                                     color = if (isSelected) Color.Black else Color(0xFF475569)
                                 )
                             }
@@ -1409,7 +1456,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // SPACIOUS 2-COLUMN DAILY CALORIE BALANCE & EVALUATION CARD
+                // CÂN BẰNG NĂNG LƯỢNG - ĐỒNG BỘ 1 DÒNG DUY NHẤT
                 if (!isFutureDate && hasDailyData) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -1418,7 +1465,24 @@ class MainActivity : ComponentActivity() {
                         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            val whoTolerance = activeUser.targetCaloriesIn * 0.12f // Ngưỡng dung sai khuyến nghị WHO ±12% (~200 kcal)
+                            val whoTolerance = activeUser.targetCaloriesIn * 0.12f
+
+                            val badgeText = when {
+                                abs(balanceCal) <= whoTolerance -> "Cân bằng (±${abs(balanceCal).toInt()} kcal)"
+                                balanceCal > 0 -> "Dư ${balanceCal.toInt()} kcal"
+                                else -> "Thiếu ${abs(balanceCal).toInt()} kcal"
+                            }
+
+                            val badgeBgColor = when {
+                                abs(balanceCal) <= whoTolerance -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)
+                                balanceCal > 0 -> Color(0xFFEF4444).copy(alpha = 0.2f)
+                                else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                            }
+                            val badgeTextColor = when {
+                                abs(balanceCal) <= whoTolerance -> MaterialTheme.colorScheme.secondary
+                                balanceCal > 0 -> Color(0xFFEF4444)
+                                else -> MaterialTheme.colorScheme.primary
+                            }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1426,66 +1490,32 @@ class MainActivity : ComponentActivity() {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("⚖️", fontSize = 18.sp)
+                                    Text("⚖️", fontSize = 17.sp)
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("CÂN BẰNG NĂNG LƯỢNG", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
                                 }
 
-                                if (abs(balanceCal) <= whoTolerance) {
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
-                                    ) {
-                                        Text(
-                                            "CÂN BẰNG LÝ TƯỞNG (±${abs(balanceCal).toInt()} kcal)",
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                } else if (balanceCal < -whoTolerance) {
-                                    val isSafeDeficit = balanceCal >= -650f
-                                    Surface(
-                                        color = if (isSafeDeficit) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSafeDeficit) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Color(0xFFEF4444).copy(alpha = 0.5f))
-                                    ) {
-                                        Text(
-                                            if (isSafeDeficit) "THÂM HỤT AN TOÀN (-${abs(balanceCal).toInt()} kcal)" else "THÂM HỤT SÂU (-${abs(balanceCal).toInt()} kcal)",
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = if (isSafeDeficit) MaterialTheme.colorScheme.primary else Color(0xFFEF4444)
-                                        )
-                                    }
-                                } else {
-                                    val isMildSurplus = balanceCal <= whoTolerance * 2.5f
-                                    Surface(
-                                        color = if (isMildSurplus) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isMildSurplus) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f) else Color(0xFFEF4444).copy(alpha = 0.5f))
-                                    ) {
-                                        Text(
-                                            if (isMildSurplus) "DƯ THỪA NHẸ (+${balanceCal.toInt()} kcal)" else "DƯ THỪA NHIỀU (+${balanceCal.toInt()} kcal)",
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = if (isMildSurplus) MaterialTheme.colorScheme.tertiary else Color(0xFFEF4444)
-                                        )
-                                    }
+                                Surface(
+                                    color = badgeBgColor,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, badgeTextColor.copy(alpha = 0.5f))
+                                ) {
+                                    Text(
+                                        badgeText,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = badgeTextColor
+                                    )
                                 }
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            // 2-COLUMN SPACIOUS LAYOUT (IN VS TOTAL OUT)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // Column 1: IN
                                 Surface(
                                     modifier = Modifier.weight(1f),
                                     color = Color(0xFF0C121E),
@@ -1496,14 +1526,13 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.padding(12.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text("NẠP THỰC TẾ (IN)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Text("IN", fontSize = 12.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text("${currentLog.totalCaloriesIn.toInt()}", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color.White)
                                         Text("kcal từ món ăn", fontSize = 10.sp, color = Color(0xFF94A3B8))
                                     }
                                 }
 
-                                // Column 2: OUT
                                 Surface(
                                     modifier = Modifier.weight(1f),
                                     color = Color(0xFF0C121E),
@@ -1514,7 +1543,7 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.padding(12.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text("TỔNG TIÊU THỤ (OUT)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                                        Text("OUT", fontSize = 12.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.tertiary)
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text("${totalOutCal.toInt()}", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color.White)
                                         Text("BMR: ${naturalBurnBmr.toInt()} + Tập: ${currentLog.activeCaloriesOut.toInt()}", fontSize = 9.sp, color = Color(0xFF94A3B8))
@@ -1524,7 +1553,6 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            // Evaluation Text (Realistic WHO recommendation)
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 color = Color(0xFF0C121E),
@@ -1536,9 +1564,9 @@ class MainActivity : ComponentActivity() {
                                     balanceCal < -whoTolerance && balanceCal >= -650f ->
                                         "🎯 Thâm hụt ${abs(balanceCal).toInt()} kcal nằm trong ngưỡng an toàn chuẩn (300-600 kcal) giúp đốt mỡ bền vững, bảo toàn khối cơ và không gây kiệt sức."
                                     balanceCal < -650f ->
-                                        "⚠️ Thâm hụt ${abs(balanceCal).toInt()} kcal khá sâu. WHO khuyến cáo không nên cắt giảm quá mức liên tục để tránh suy giảm miễn dịch và làm chậm trao đổi chất (BMR)."
+                                        "⚠️ Thâm hụt ${abs(balanceCal).toInt()} kcal khá sâu. WHO khuyến cáo không nên cắt giảm quá mức liên tục để tránh suy giảm trao đổi chất."
                                     balanceCal <= whoTolerance * 2.5f ->
-                                        "💪 Nạp thặng dư nhẹ ${balanceCal.toInt()} kcal rất tốt cho phát triển cơ bắp (Lean Bulking), có thể bù trừ linh hoạt qua các buổi tập tiếp theo trong tuần."
+                                        "💪 Nạp thặng dư nhẹ ${balanceCal.toInt()} kcal rất tốt cho phát triển cơ bắp, có thể bù trừ linh hoạt qua các buổi tập tiếp theo."
                                     else ->
                                         "⚠️ Lượng nạp vượt mức tiêu thụ ${balanceCal.toInt()} kcal. Bạn có thể duy trì vận động thể thao nhẹ (chạy bộ, đá bóng 30p) để cơ thể cân đối lại."
                                 }
@@ -1583,12 +1611,11 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(14.dp))
                 }
 
-                // PROGRESS CARDS (IN & OUT)
+                // TIẾN TRÌNH IN & OUT
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // IN PROGRESS
                     Surface(
                         modifier = Modifier.weight(1f),
                         color = MaterialTheme.colorScheme.surface,
@@ -1599,7 +1626,7 @@ class MainActivity : ComponentActivity() {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("🥗", fontSize = 16.sp)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("NẠP (IN)", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                Text("IN", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
@@ -1630,7 +1657,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // OUT PROGRESS
                     Surface(
                         modifier = Modifier.weight(1f),
                         color = MaterialTheme.colorScheme.surface,
@@ -1641,7 +1667,7 @@ class MainActivity : ComponentActivity() {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("🔥", fontSize = 16.sp)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("ĐỐT TẬP (OUT)", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary)
+                                Text("OUT", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary)
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
@@ -1667,7 +1693,7 @@ class MainActivity : ComponentActivity() {
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                             ) {
-                                Text("＋ Lên Lịch", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                Text("＋ Tập Luyện", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                             }
                         }
                     }
@@ -1675,7 +1701,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // CHI TIẾT CÁC MÓN ĂN TRONG NGÀY
+                // CHI TIẾT MÓN ĂN
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1730,7 +1756,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // CHI TIẾT CÁC BÀI TẬP TRONG NGÀY
+                // CHI TIẾT BÀI TẬP
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1877,7 +1903,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.4. ADD FOOD SCREEN (WITH PRECISE GRAM/QUANTITY INPUT & GHOST BAR)
+    // 3.4. ADD FOOD SCREEN (TAB IN)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -1889,7 +1915,6 @@ class MainActivity : ComponentActivity() {
         var searchQuery by remember { mutableStateOf("") }
         var inputGramText by remember { mutableStateOf("100") }
 
-        // Custom manual input state
         var customName by remember { mutableStateOf("") }
         var customProtein by remember { mutableStateOf("") }
         var customCarb by remember { mutableStateOf("") }
@@ -1898,6 +1923,7 @@ class MainActivity : ComponentActivity() {
 
         val currentLog = uiState.currentDailyLog
         val targetMacros = uiState.activeUser.targetMacros
+        val targetCalories = uiState.activeUser.targetCaloriesIn
 
         val imagePickerLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -1908,7 +1934,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Thêm Khẩu Phần (Ghost Bar)", fontWeight = FontWeight.Bold) },
+                    title = { Text("Thêm Khẩu Phần", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
                         Box(
                             modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
@@ -1922,6 +1948,93 @@ class MainActivity : ComponentActivity() {
             containerColor = MaterialTheme.colorScheme.background
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+
+                // THANH TIẾN TRÌNH ĐẶT LÊN ĐẦU VỚI TÍNH NĂNG THU GỌN / MỞ RỘNG
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { stateHolder.toggleProgressExpanded() },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Tiến trình", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                if (uiState.previewMacro != null) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text("Đang xem 👁️", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            Text(
+                                if (uiState.isProgressExpanded) "Thu gọn ▲" else "Mở rộng ▼",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        AnimatedVisibility(
+                            visible = uiState.isProgressExpanded,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically()
+                        ) {
+                            Column(modifier = Modifier.padding(top = 10.dp)) {
+                                GhostBarProgressItem(
+                                    label = "Kcal",
+                                    current = currentLog.totalCaloriesIn,
+                                    preview = uiState.previewMacro?.calories ?: 0f,
+                                    target = targetCalories,
+                                    unit = "kcal",
+                                    baseColor = Color(0xFFA855F7)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                GhostBarProgressItem(
+                                    label = "Protein",
+                                    current = currentLog.currentMacros.protein,
+                                    preview = uiState.previewMacro?.protein ?: 0f,
+                                    target = targetMacros.protein,
+                                    unit = "g",
+                                    baseColor = Color(0xFF38BDF8)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                GhostBarProgressItem(
+                                    label = "Carb",
+                                    current = currentLog.currentMacros.carb,
+                                    preview = uiState.previewMacro?.carb ?: 0f,
+                                    target = targetMacros.carb,
+                                    unit = "g",
+                                    baseColor = Color(0xFF10B981)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                GhostBarProgressItem(
+                                    label = "Fat",
+                                    current = currentLog.currentMacros.fat,
+                                    preview = uiState.previewMacro?.fat ?: 0f,
+                                    target = targetMacros.fat,
+                                    unit = "g",
+                                    baseColor = Color(0xFFF59E0B)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 // SEGMENTAL PILL TAB BAR
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
@@ -1959,9 +2072,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // SEARCH BAR FOR TAB 0 & TAB 1
+                // SEARCH BAR
                 if (selectedTab == 0 || selectedTab == 1) {
                     OutlinedTextField(
                         value = searchQuery,
@@ -1992,7 +2105,7 @@ class MainActivity : ComponentActivity() {
 
                 Box(modifier = Modifier.weight(1f)) {
                     when (selectedTab) {
-                        0 -> { // TAB 0: RAW INGREDIENTS / DÂN DÃ (TỰ TÍNH CALO, Ô NHẬP GAM/SỐ LƯỢNG TÙY Ý)
+                        0 -> { // NGUYÊN LIỆU DÂN DÃ - ĐÃ ĐẨY TỰ NHẬP MÓN KHÁC LÊN ĐẦU
                             val filteredRaw = remember(searchQuery) {
                                 if (searchQuery.isBlank()) stateHolder.rawFoodCatalog
                                 else stateHolder.rawFoodCatalog.filter {
@@ -2001,6 +2114,89 @@ class MainActivity : ComponentActivity() {
                             }
 
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                item {
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .clickable { showCustomManual = !showCustomManual },
+                                        color = MaterialTheme.colorScheme.surface,
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (showCustomManual) MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text("✍️", fontSize = 16.sp)
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Tự nhập món khác (Custom Macros)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
+                                                }
+                                                Text(if (showCustomManual) "Thu gọn ▲" else "Nhập ngay ▼", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            if (showCustomManual) {
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                OutlinedTextField(
+                                                    value = customName,
+                                                    onValueChange = { customName = it },
+                                                    label = { Text("Tên món ăn") },
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    OutlinedTextField(
+                                                        value = customProtein,
+                                                        onValueChange = {
+                                                            customProtein = it
+                                                            val p = it.toFloatOrNull() ?: 0f
+                                                            val c = customCarb.toFloatOrNull() ?: 0f
+                                                            val f = customFat.toFloatOrNull() ?: 0f
+                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                        },
+                                                        label = { Text("P (g)") },
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    OutlinedTextField(
+                                                        value = customCarb,
+                                                        onValueChange = {
+                                                            customCarb = it
+                                                            val p = customProtein.toFloatOrNull() ?: 0f
+                                                            val c = it.toFloatOrNull() ?: 0f
+                                                            val f = customFat.toFloatOrNull() ?: 0f
+                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                        },
+                                                        label = { Text("C (g)") },
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    OutlinedTextField(
+                                                        value = customFat,
+                                                        onValueChange = {
+                                                            customFat = it
+                                                            val p = customProtein.toFloatOrNull() ?: 0f
+                                                            val c = customCarb.toFloatOrNull() ?: 0f
+                                                            val f = it.toFloatOrNull() ?: 0f
+                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                        },
+                                                        label = { Text("F (g)") },
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                }
+
                                 items(filteredRaw) { item ->
                                     val isSelected = uiState.selectedRawIngredient?.id == item.id
                                     val currentAmount = if (isSelected) uiState.rawAmount else item.defaultAmount
@@ -2063,14 +2259,12 @@ class MainActivity : ComponentActivity() {
                                                 )
                                             }
 
-                                            // CONTROLLER (Ô NHẬP GAM CỤ THỂ HOẶC SỐ LƯỢNG)
                                             if (isSelected) {
                                                 Spacer(modifier = Modifier.height(10.dp))
                                                 Divider(color = Color(0xFF26334D))
                                                 Spacer(modifier = Modifier.height(8.dp))
 
                                                 if (item.unitType == UnitType.GRAM) {
-                                                    // Ô NHẬP SỐ GAM TÙY Ý (VD: 80g, 120g...) + CHIP CHỌN NHANH
                                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                                         Row(
                                                             modifier = Modifier.fillMaxWidth(),
@@ -2120,7 +2314,6 @@ class MainActivity : ComponentActivity() {
                                                         }
                                                     }
                                                 } else {
-                                                    // BỘ ĐẾM & NHẬP ĐƠN VỊ (QUẢ, BÌA, CỦ, BÁT, HỘP...)
                                                     Row(
                                                         modifier = Modifier.fillMaxWidth(),
                                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2163,7 +2356,7 @@ class MainActivity : ComponentActivity() {
 
                                                 Spacer(modifier = Modifier.height(6.dp))
                                                 Text(
-                                                    "Chi tiết Macros: P: ${macro.protein.toInt()}g | C: ${macro.carb.toInt()}g | F: ${macro.fat.toInt()}g",
+                                                    "Macros: P: ${macro.protein.toInt()}g | C: ${macro.carb.toInt()}g | F: ${macro.fat.toInt()}g",
                                                     fontSize = 11.sp,
                                                     color = MaterialTheme.colorScheme.secondary,
                                                     fontWeight = FontWeight.SemiBold
@@ -2172,89 +2365,9 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-
-                                // OPTION TO MANUALLY INPUT CUSTOM UNKNOWN FOOD
-                                item {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .clickable { showCustomManual = !showCustomManual },
-                                        color = MaterialTheme.colorScheme.surface,
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                                    ) {
-                                        Column(modifier = Modifier.padding(12.dp)) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text("✍️ Tự nhập món khác (Custom Macros)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
-                                                Text(if (showCustomManual) "▲" else "▼", fontSize = 11.sp, color = Color.Gray)
-                                            }
-
-                                            if (showCustomManual) {
-                                                Spacer(modifier = Modifier.height(10.dp))
-                                                OutlinedTextField(
-                                                    value = customName,
-                                                    onValueChange = { customName = it },
-                                                    label = { Text("Tên món ăn") },
-                                                    shape = RoundedCornerShape(12.dp),
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                    OutlinedTextField(
-                                                        value = customProtein,
-                                                        onValueChange = {
-                                                            customProtein = it
-                                                            val p = it.toFloatOrNull() ?: 0f
-                                                            val c = customCarb.toFloatOrNull() ?: 0f
-                                                            val f = customFat.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
-                                                        },
-                                                        label = { Text("P (g)") },
-                                                        shape = RoundedCornerShape(10.dp),
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                    OutlinedTextField(
-                                                        value = customCarb,
-                                                        onValueChange = {
-                                                            customCarb = it
-                                                            val p = customProtein.toFloatOrNull() ?: 0f
-                                                            val c = it.toFloatOrNull() ?: 0f
-                                                            val f = customFat.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
-                                                        },
-                                                        label = { Text("C (g)") },
-                                                        shape = RoundedCornerShape(10.dp),
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                    OutlinedTextField(
-                                                        value = customFat,
-                                                        onValueChange = {
-                                                            customFat = it
-                                                            val p = customProtein.toFloatOrNull() ?: 0f
-                                                            val c = customCarb.toFloatOrNull() ?: 0f
-                                                            val f = it.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
-                                                        },
-                                                        label = { Text("F (g)") },
-                                                        shape = RoundedCornerShape(10.dp),
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
-                        1 -> { // TAB 1: EXPANDED PRESET CATALOG (18+ MÓN VIỆT VỚI TÌM KIẾM)
+                        1 -> { // 18+ MÓN VIỆT NAM
                             val filteredPresets = remember(searchQuery) {
                                 if (searchQuery.isBlank()) stateHolder.foodCatalog
                                 else stateHolder.foodCatalog.filter {
@@ -2332,7 +2445,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        2 -> { // TAB 2: REAL OCR SCANNER TAB
+                        2 -> { // SCAN ẢNH OCR
                             Column(
                                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -2351,12 +2464,12 @@ class MainActivity : ComponentActivity() {
                                         if (uiState.isScanningImage) {
                                             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
                                             Spacer(modifier = Modifier.height(8.dp))
-                                            Text("AI đang đọc bảng dinh dưỡng trên ảnh...", fontSize = 12.sp, color = Color.LightGray)
+                                            Text("AI đang đọc bảng dinh dưỡng...", fontSize = 12.sp, color = Color.LightGray)
                                         } else {
                                             Text("📷", fontSize = 32.sp)
                                             Spacer(modifier = Modifier.height(4.dp))
-                                            Text("Bấm để Chọn Ảnh Bao Bì Quét Thật", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                            Text("AI tự động bóc tách Calo, Protein, Carb, Fat", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                            Text("Bấm để Chọn Ảnh Bao Bì", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                            Text("Tự động bóc tách Calo, P, C, F", fontSize = 11.sp, color = Color(0xFF94A3B8))
                                         }
                                     }
                                 }
@@ -2388,54 +2501,54 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // GHOST BAR PROGRESS (HIGH-AESTHETIC LUMINOUS PREVIEW)
-                Surface(
+                // HAI Ô NẰM NGANG CẠNH NHAU
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Tiến Trình Macros (Ghost Bar Realtime)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
-                            Text(if (uiState.previewMacro != null) "Đang xem 👁️" else "Chưa chọn", fontSize = 11.sp, color = if (uiState.previewMacro != null) MaterialTheme.colorScheme.tertiary else Color(0xFF64748B), fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        GhostBarProgressItem("Protein", currentLog.currentMacros.protein, uiState.previewMacro?.protein ?: 0f, targetMacros.protein, "g", Color(0xFF38BDF8))
-                        Spacer(modifier = Modifier.height(8.dp))
-                        GhostBarProgressItem("Carb", currentLog.currentMacros.carb, uiState.previewMacro?.carb ?: 0f, targetMacros.carb, "g", Color(0xFF10B981))
-                        Spacer(modifier = Modifier.height(8.dp))
-                        GhostBarProgressItem("Fat", currentLog.currentMacros.fat, uiState.previewMacro?.fat ?: 0f, targetMacros.fat, "g", Color(0xFFF59E0B))
+                    Button(
+                        onClick = {
+                            uiState.previewMacro?.let {
+                                stateHolder.commitFoodLog(uiState.previewFoodName, it)
+                            }
+                        },
+                        enabled = uiState.previewMacro != null,
+                        modifier = Modifier.weight(1.2f).height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            disabledContainerColor = Color(0xFF1E283D)
+                        )
+                    ) {
+                        Text(
+                            "Xác Nhận Ăn",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = if (uiState.previewMacro != null) Color.Black else Color(0xFF64748B)
+                        )
                     }
-                }
 
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Button(
-                    onClick = {
-                        uiState.previewMacro?.let {
-                            stateHolder.commitFoodLog(uiState.previewFoodName, it)
-                        }
-                    },
-                    enabled = uiState.previewMacro != null,
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        disabledContainerColor = Color(0xFF1E283D)
-                    )
-                ) {
-                    Text(
-                        if (uiState.previewMacro != null) "Xác Nhận Ăn (+${uiState.previewMacro!!.calories.toInt()} kcal)" else "Chọn Món Để Xem Ghost Bar",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Black,
-                        color = if (uiState.previewMacro != null) Color.Black else Color(0xFF64748B)
-                    )
+                    Button(
+                        onClick = {
+                            if (uiState.previewMacro != null) {
+                                stateHolder.navigateTo(Screen.SET_SCHEDULE_FOOD)
+                            }
+                        },
+                        enabled = uiState.previewMacro != null,
+                        modifier = Modifier.weight(1f).height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            disabledContainerColor = Color(0xFF1E283D)
+                        )
+                    ) {
+                        Text(
+                            "SET LỊCH 📅",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Black,
+                            color = if (uiState.previewMacro != null) Color.Black else Color(0xFF64748B)
+                        )
+                    }
                 }
             }
         }
@@ -2445,6 +2558,7 @@ class MainActivity : ComponentActivity() {
     fun GhostBarProgressItem(label: String, current: Float, preview: Float, target: Float, unit: String, baseColor: Color) {
         val totalProjected = current + preview
         val isOverTarget = totalProjected > target
+        val surplus = totalProjected - target
 
         val currentRatio = (current / target).coerceIn(0f, 1f)
         val ghostRatio = (totalProjected / target).coerceIn(0f, 1f)
@@ -2457,17 +2571,18 @@ class MainActivity : ComponentActivity() {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                Row {
-                    Text("${current.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = baseColor)
-                    if (preview > 0f) {
-                        Text(
-                            " + ${preview.toInt()}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isOverTarget) Color(0xFFEF4444) else MaterialTheme.colorScheme.tertiary
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isOverTarget) {
+                        Text("${target.toInt()} / ${target.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = baseColor)
+                        Text(" + ${surplus.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, color = Color(0xFFEF4444))
+                        Text(" $unit", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    } else {
+                        Text("${current.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = baseColor)
+                        if (preview > 0f) {
+                            Text(" + ${preview.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                        }
+                        Text(" / ${target.toInt()} $unit", fontSize = 11.sp, color = Color(0xFF64748B))
                     }
-                    Text(" / ${target.toInt()} $unit", fontSize = 11.sp, color = Color(0xFF64748B))
                 }
             }
 
@@ -2487,13 +2602,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.5. CREATE WORKOUT SCREEN (WITH MULTI-DATE PICKER, SEARCH & 24+ PRESETS)
+    // 3.5. CREATE WORKOUT SCREEN (VỚI 2 NÚT PHÂN LOẠI CHUẨN [🏋️ Gym / Tạ] VÀ [⚽ Thể thao / Chạy] NHƯ HÌNH)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun CreateWorkoutScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
-        val context = LocalContext.current
         var workoutCategory by remember { mutableStateOf(WorkoutCategory.GYM) }
         var exerciseName by remember { mutableStateOf("Đẩy ngực ngang (Bench Press)") }
 
@@ -2504,29 +2618,71 @@ class MainActivity : ComponentActivity() {
         var paceText by remember { mutableStateOf("5:30") }
         var durationText by remember { mutableStateOf("30") }
         var currentMet by remember { mutableStateOf(5.5f) }
+        var manualCalorieText by remember { mutableStateOf("") }
 
         var workoutSearchQuery by remember { mutableStateOf("") }
-        val today = LocalDate.now()
-        // Multi-date selection set
-        var selectedTargetDates by remember { mutableStateOf(setOf(uiState.selectedDate)) }
 
         val activeUser = uiState.activeUser
-        val dateFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
-        val shortDateFormatter = DateTimeFormatter.ofPattern("dd/MM")
+        val currentLog = uiState.currentDailyLog
 
-        // Filter presets by search
-        val filteredPresets = remember(workoutSearchQuery, stateHolder.workoutCatalog) {
-            if (workoutSearchQuery.isBlank()) stateHolder.workoutCatalog
-            else stateHolder.workoutCatalog.filter {
-                it.name.contains(workoutSearchQuery, ignoreCase = true) ||
-                        it.tag.contains(workoutSearchQuery, ignoreCase = true)
+        // Tính lượng Calo còn thiếu hôm nay
+        val neededCalorie = (activeUser.targetCaloriesOut - currentLog.activeCaloriesOut).coerceAtLeast(0f)
+
+        // Danh sách bài tập lọc theo Phân loại và Tìm kiếm
+        val filteredPresets = remember(workoutCategory, workoutSearchQuery, stateHolder.workoutCatalog) {
+            val byCat = stateHolder.workoutCatalog.filter { it.category == workoutCategory }
+            if (workoutSearchQuery.isBlank()) byCat
+            else byCat.filter { it.name.contains(workoutSearchQuery, ignoreCase = true) || it.tag.contains(workoutSearchQuery, ignoreCase = true) }
+        }
+
+        // Danh sách gợi ý bài tập thông minh theo Calo thiếu
+        val smartSuggestions = remember(neededCalorie, activeUser.weightKg) {
+            if (neededCalorie <= 0f) {
+                listOf(
+                    Triple("Hít đất / Chống đẩy (Push-up)", WorkoutCategory.GYM, 100f),
+                    Triple("Đi bộ nhanh (Brisk Walking)", WorkoutCategory.CARDIO, 4.5f * activeUser.weightKg * 0.5f)
+                )
+            } else if (neededCalorie <= 250f) {
+                listOf(
+                    Triple("Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, 9.8f * activeUser.weightKg * (25f / 60f)),
+                    Triple("Nhảy dây đốt mỡ (Jump Rope)", WorkoutCategory.CARDIO, 10.0f * activeUser.weightKg * (15f / 60f))
+                )
+            } else if (neededCalorie <= 500f) {
+                listOf(
+                    Triple("Bóng đá sân cỏ 7 người", WorkoutCategory.CARDIO, 8.5f * activeUser.weightKg * (45f / 60f)),
+                    Triple("Cầu lông đối kháng đôi", WorkoutCategory.CARDIO, 6.5f * activeUser.weightKg * (50f / 60f)),
+                    Triple("Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, 6.0f * activeUser.weightKg * (35f / 60f))
+                )
+            } else {
+                listOf(
+                    Triple("Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, 9.8f * activeUser.weightKg * (40f / 60f)),
+                    Triple("Bơi sải tốc độ cao", WorkoutCategory.CARDIO, 8.5f * activeUser.weightKg * (45f / 60f)),
+                    Triple("Kéo lưng đùi (Deadlift)", WorkoutCategory.GYM, 6.5f * activeUser.weightKg * (35f / 60f))
+                )
+            }
+        }
+
+        // Tự động tính số Calo đốt dự kiến
+        val calculatedBurnCalories = remember(
+            workoutCategory, setsText, durationText, manualCalorieText, currentMet, activeUser.weightKg
+        ) {
+            val manCal = manualCalorieText.toFloatOrNull()
+            if (manCal != null && manCal > 0f) {
+                manCal
+            } else {
+                val dur = if (workoutCategory == WorkoutCategory.GYM) {
+                    (setsText.toFloatOrNull() ?: 4f) * 6f
+                } else {
+                    durationText.toFloatOrNull() ?: 30f
+                }
+                currentMet * activeUser.weightKg * (dur / 60f)
             }
         }
 
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Tạo Lịch Tập Luyện", fontWeight = FontWeight.Bold) },
+                    title = { Text("Tập Luyện", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
                         Box(
                             modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
@@ -2546,240 +2702,200 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // TDEE & BMR INFO CARD
+                // 1. GỢI Ý BÀI TẬP THÔNG MINH DỰA TRÊN CALO THIẾU Ở ĐẦU TRANG
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
+                    color = Color(0xFF0F1D33),
                     shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f))
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("TDEE người dùng (${activeUser.name})", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                            Text("${activeUser.tdee.toInt()} kcal/ngày", fontSize = 17.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.tertiary)
-                        }
-                        Text("BMR: ${activeUser.bmr.toInt()} kcal", fontSize = 12.sp, color = Color.White)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // MULTI-DATE SELECTION SECTION
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Chọn các ngày áp dụng (${selectedTargetDates.size} ngày):", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                val d = selectedTargetDates.firstOrNull() ?: uiState.selectedDate
-                                DatePickerDialog(
-                                    context,
-                                    { _, y, m, day ->
-                                        selectedTargetDates = selectedTargetDates + LocalDate.of(y, m + 1, day)
-                                    },
-                                    d.year,
-                                    d.monthValue - 1,
-                                    d.dayOfMonth
-                                ).show()
-                            },
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
-                    ) {
-                        Text(
-                            "📅 + Chọn thêm ngày",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // INTERACTIVE MINI CALENDAR STRIP (BẤM ĐỂ CHỌN NHIỀU NGÀY NHANH)
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    for (offset in -2..12) {
-                        val d = today.plusDays(offset.toLong())
-                        val isSelected = d in selectedTargetDates
-                        val dayOfWeekStr = when (d.dayOfWeek) {
-                            DayOfWeek.MONDAY -> "T2"
-                            DayOfWeek.TUESDAY -> "T3"
-                            DayOfWeek.WEDNESDAY -> "T4"
-                            DayOfWeek.THURSDAY -> "T5"
-                            DayOfWeek.FRIDAY -> "T6"
-                            DayOfWeek.SATURDAY -> "T7"
-                            DayOfWeek.SUNDAY -> "CN"
-                        }
-
-                        Surface(
-                            modifier = Modifier
-                                .width(46.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    selectedTargetDates = if (isSelected) {
-                                        if (selectedTargetDates.size > 1) selectedTargetDates - d else selectedTargetDates
-                                    } else {
-                                        selectedTargetDates + d
-                                    }
-                                },
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
-                                modifier = Modifier.padding(vertical = 6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(dayOfWeekStr, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF94A3B8))
-                                Text("${d.dayOfMonth}", fontSize = 13.sp, fontWeight = FontWeight.Black, color = if (isSelected) Color.Black else Color.White)
-                                Text(if (isSelected) "✓" else "•", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF64748B))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("💡", fontSize = 17.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Gợi ý theo Calo thiếu hôm nay", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                             }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // DISPLAY SELECTED DATE CHIPS WITH REMOVE
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    selectedTargetDates.sorted().forEach { d ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(d.format(shortDateFormatter), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    "✕",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = Color(0xFFEF4444),
-                                    modifier = Modifier.clickable {
-                                        if (selectedTargetDates.size > 1) selectedTargetDates = selectedTargetDates - d
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // QUICK PERIOD SELECTION CHIPS
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf(
-                        "Cả tuần (7 ngày)" to {
-                            selectedTargetDates = (0..6).map { today.plusDays(it.toLong()) }.toSet()
-                        },
-                        "30 ngày (1 tháng)" to {
-                            selectedTargetDates = (0..29).map { today.plusDays(it.toLong()) }.toSet()
-                        },
-                        "Thứ 2, 4, 6" to {
-                            selectedTargetDates = (0..13).map { today.plusDays(it.toLong()) }.filter {
-                                it.dayOfWeek in listOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY)
-                            }.toSet()
-                        },
-                        "Thứ 3, 5, 7" to {
-                            selectedTargetDates = (0..13).map { today.plusDays(it.toLong()) }.filter {
-                                it.dayOfWeek in listOf(DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.SATURDAY)
-                            }.toSet()
-                        }
-                    ).forEach { (label, action) ->
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { action() },
-                            color = Color(0xFF1E283D),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                        ) {
                             Text(
-                                label,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary
+                                if (neededCalorie > 0f) "Thiếu: ${neededCalorie.toInt()} kcal" else "Đã đạt mục tiêu ✓",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (neededCalorie > 0f) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
                             )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        smartSuggestions.forEach { (name, cat, estCal) ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        workoutCategory = cat
+                                        exerciseName = name
+                                        val found = stateHolder.workoutCatalog.find { it.name == name }
+                                        if (found != null) {
+                                            setsText = found.defaultSets.toString()
+                                            repsText = found.defaultReps.toString()
+                                            weightText = found.defaultWeightKg.toInt().toString()
+                                            paceText = found.defaultPace
+                                            durationText = found.defaultDurationMin.toInt().toString()
+                                            currentMet = found.met
+                                        }
+                                        manualCalorieText = estCal.toInt().toString()
+                                    },
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(name, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            "🔥 +${estCal.toInt()} kcal",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // WORKOUT SEARCH BAR
+                // 2. PHÂN LOẠI: 2 NÚT TO ĐẸP [ 🏋️ Gym / Tạ ] VÀ [ ⚽ Thể thao / Chạy ] CHUẨN NHƯ HÌNH
+                Text("Phân loại:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            workoutCategory = WorkoutCategory.GYM
+                            if (currentMet > 6f) currentMet = 5.5f
+                            val firstGym = stateHolder.workoutCatalog.firstOrNull { it.category == WorkoutCategory.GYM }
+                            if (firstGym != null && (exerciseName.contains("bộ", ignoreCase = true) || exerciseName.contains("bóng", ignoreCase = true))) {
+                                exerciseName = firstGym.name
+                                setsText = firstGym.defaultSets.toString()
+                                repsText = firstGym.defaultReps.toString()
+                                weightText = firstGym.defaultWeightKg.toInt().toString()
+                                currentMet = firstGym.met
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (workoutCategory == WorkoutCategory.GYM) Color(0xFFF59E0B) else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(50.dp)
+                    ) {
+                        Text(
+                            "🏋️ Gym / Tạ",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = if (workoutCategory == WorkoutCategory.GYM) Color.Black else Color.White
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            workoutCategory = WorkoutCategory.CARDIO
+                            if (currentMet < 5f) currentMet = 8.0f
+                            val firstCardio = stateHolder.workoutCatalog.firstOrNull { it.category == WorkoutCategory.CARDIO }
+                            if (firstCardio != null && (exerciseName.contains("Press", ignoreCase = true) || exerciseName.contains("Squat", ignoreCase = true))) {
+                                exerciseName = firstCardio.name
+                                paceText = firstCardio.defaultPace
+                                durationText = firstCardio.defaultDurationMin.toInt().toString()
+                                currentMet = firstCardio.met
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (workoutCategory == WorkoutCategory.CARDIO) Color(0xFFF59E0B) else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(50.dp)
+                    ) {
+                        Text(
+                            "⚽ Thể thao / Chạy",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = if (workoutCategory == WorkoutCategory.CARDIO) Color.Black else Color.White
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 3. TÌM KIẾM & DANH SÁCH BÀI TẬP GỢI Ý THEO PHÂN LOẠI
                 OutlinedTextField(
                     value = workoutSearchQuery,
                     onValueChange = { workoutSearchQuery = it },
-                    label = { Text("🔍 Tìm bài tập (vd: đá bóng, ngực, bơi, squat...)") },
+                    placeholder = { Text("🔍 Tìm bài tập (vd: đá bóng, ngực, bơi, squat...)", fontSize = 12.sp, color = Color(0xFF64748B)) },
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
+                    singleLine = true,
                     trailingIcon = {
                         if (workoutSearchQuery.isNotEmpty()) {
                             Text("✕", modifier = Modifier.clickable { workoutSearchQuery = "" }.padding(8.dp), color = Color.Gray, fontWeight = FontWeight.Bold)
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // PRESET WORKOUT QUICK SELECTION LIST
-                Text("Gợi ý bài tập & môn thể thao (${filteredPresets.size}):", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Text("Gợi ý bài tập (${filteredPresets.size}):", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF94A3B8))
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    filteredPresets.take(14).forEach { preset ->
+                    filteredPresets.forEach { preset ->
                         val isSelected = exerciseName == preset.name
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
                                 .clickable {
                                     exerciseName = preset.name
-                                    workoutCategory = preset.category
                                     setsText = preset.defaultSets.toString()
                                     repsText = preset.defaultReps.toString()
                                     weightText = preset.defaultWeightKg.toInt().toString()
                                     paceText = preset.defaultPace
                                     durationText = preset.defaultDurationMin.toInt().toString()
                                     currentMet = preset.met
+                                    manualCalorieText = ""
                                 },
-                            color = if (isSelected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.surface,
-                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                            color = if (isSelected) Color(0xFF16253D) else MaterialTheme.colorScheme.surface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(preset.icon, fontSize = 14.sp)
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     preset.name,
-                                    fontSize = 11.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isSelected) Color.Black else Color.White
+                                    color = if (isSelected) MaterialTheme.colorScheme.secondary else Color.White
                                 )
                             }
                         }
@@ -2788,40 +2904,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // CATEGORY TOGGLE (GYM VS CARDIO/SPORT)
-                Text("Phân loại:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray)
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = {
-                            workoutCategory = WorkoutCategory.GYM
-                            if (currentMet > 6f) currentMet = 5.5f
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (workoutCategory == WorkoutCategory.GYM) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.surface
-                        ),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("🏋️ Gym / Tạ", fontWeight = FontWeight.Bold, color = if (workoutCategory == WorkoutCategory.GYM) Color.Black else Color.White)
-                    }
-                    Button(
-                        onClick = {
-                            workoutCategory = WorkoutCategory.CARDIO
-                            if (currentMet < 5f) currentMet = 8.0f
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (workoutCategory == WorkoutCategory.CARDIO) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.surface
-                        ),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("⚽ Thể thao / Chạy", fontWeight = FontWeight.Bold, color = if (workoutCategory == WorkoutCategory.CARDIO) Color.Black else Color.White)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
+                // 4. Ô NHẬP TÊN BÀI TẬP / MÔN THỂ THAO
                 OutlinedTextField(
                     value = exerciseName,
                     onValueChange = { exerciseName = it },
@@ -2832,6 +2915,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                // 5. PHẦN NHẬP LIỆU TƯƠNG ỨNG VỚI PHÂN LOẠI
                 if (workoutCategory == WorkoutCategory.GYM) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -2864,7 +2948,7 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = paceText,
                             onValueChange = { paceText = it },
-                            label = { Text("Tốc độ (Pace, mđ: 5:30)") },
+                            label = { Text("Tốc độ / Pace (mđ: 5:30)") },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1.3f)
                         )
@@ -2879,43 +2963,589 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                Button(
-                    onClick = {
-                        val finalExerciseName = exerciseName.ifBlank {
-                            if (workoutCategory == WorkoutCategory.GYM) "Bài tập Gym" else "Thể thao ngoài trời"
-                        }
-                        val finalSets = setsText.ifBlank { "4" }
-                        val finalReps = repsText.ifBlank { "10" }
-                        val finalWeight = weightText.ifBlank { "50" }
-                        val finalPace = paceText.ifBlank { "5:30" }
-                        val finalDuration = durationText.ifBlank { "30" }
+                // Ô NHẬP CALO TỰ TÍNH (NẾU MUỐN GHI ĐÈ)
+                OutlinedTextField(
+                    value = manualCalorieText,
+                    onValueChange = { manualCalorieText = it },
+                    placeholder = { Text("Tùy chọn: Nhập đè số kcal nếu muốn tự tính", fontSize = 11.sp, color = Color(0xFF64748B)) },
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                        val detailStr = if (workoutCategory == WorkoutCategory.GYM) {
-                            "$finalSets sets x $finalReps reps (${finalWeight}kg)"
-                        } else {
-                            "Tốc độ: $finalPace • $finalDuration phút"
-                        }
-                        val met = if (workoutCategory == WorkoutCategory.GYM) 5.5f else currentMet
-                        val duration = if (workoutCategory == WorkoutCategory.GYM) (finalSets.toFloatOrNull() ?: 4f) * 6f else (finalDuration.toFloatOrNull() ?: 30f)
+                Spacer(modifier = Modifier.height(14.dp))
 
-                        // Lưu lịch tập cho toàn bộ các ngày đã chọn
-                        val datesToSave = selectedTargetDates.ifEmpty { setOf(uiState.selectedDate) }.toList()
-                        stateHolder.addWorkoutScheduleMultiDays(finalExerciseName, workoutCategory, detailStr, met, duration, datesToSave)
-                    },
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                // 6. SỐ CALO ĐỐT DỰ KIẾN HIỂN THỊ NỔI BẬT
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF1E283D),
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.8f))
                 ) {
-                    Text("Lưu Lịch Tập Cho ${selectedTargetDates.size} Ngày Đã Chọn", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🔥", fontSize = 22.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Số Calo đốt dự kiến:", fontSize = 11.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (workoutCategory == WorkoutCategory.GYM) "${setsText.ifBlank { "4" }} sets • ${activeUser.weightKg}kg" else "${durationText.ifBlank { "30" }} phút • ${activeUser.weightKg}kg",
+                                    fontSize = 11.sp,
+                                    color = Color.White
+                                )
+                            }
+                        }
+
+                        Text(
+                            "+${calculatedBurnCalories.toInt()} kcal",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // 7. HAI Ô NẰM NGANG Ở CHÂN TRANG (LƯU HÔM NAY VS SET LỊCH)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val finalName = exerciseName.ifBlank { if (workoutCategory == WorkoutCategory.GYM) "Tập Gym" else "Vận động" }
+                            val detailStr = if (workoutCategory == WorkoutCategory.GYM) {
+                                "${setsText.ifBlank { "4" }} sets x ${repsText.ifBlank { "10" }} reps (${weightText.ifBlank { "50" }}kg)"
+                            } else {
+                                "Tốc độ: ${paceText.ifBlank { "5:30" }} • ${durationText.ifBlank { "30" }} phút"
+                            }
+                            val duration = if (workoutCategory == WorkoutCategory.GYM) (setsText.toFloatOrNull() ?: 4f) * 6f else (durationText.toFloatOrNull() ?: 30f)
+                            val manualCal = manualCalorieText.toFloatOrNull() ?: 0f
+
+                            stateHolder.addWorkoutScheduleMultiDays(finalName, workoutCategory, detailStr, currentMet, duration, manualCal, listOf(uiState.selectedDate))
+                        },
+                        modifier = Modifier.weight(1.2f).height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Lưu Hôm Nay", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                    }
+
+                    Button(
+                        onClick = {
+                            val finalName = exerciseName.ifBlank { if (workoutCategory == WorkoutCategory.GYM) "Tập Gym" else "Vận động" }
+                            val detailStr = if (workoutCategory == WorkoutCategory.GYM) {
+                                "${setsText.ifBlank { "4" }} sets x ${repsText.ifBlank { "10" }} reps (${weightText.ifBlank { "50" }}kg)"
+                            } else {
+                                "Tốc độ: ${paceText.ifBlank { "5:30" }} • ${durationText.ifBlank { "30" }} phút"
+                            }
+                            val duration = if (workoutCategory == WorkoutCategory.GYM) (setsText.toFloatOrNull() ?: 4f) * 6f else (durationText.toFloatOrNull() ?: 30f)
+                            val manualCal = manualCalorieText.toFloatOrNull() ?: 0f
+
+                            stateHolder.setTempWorkout(finalName, workoutCategory, detailStr, currentMet, duration, manualCal)
+                            stateHolder.navigateTo(Screen.SET_SCHEDULE_WORKOUT)
+                        },
+                        modifier = Modifier.weight(1f).height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                    ) {
+                        Text("SET LỊCH 📅", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color.Black)
+                    }
                 }
             }
         }
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.6. ANALYTICS SCREEN
+    // 3.6. SET LỊCH CHO KHẨU PHẦN ĂN
+    // -----------------------------------------------------------------------------------------
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun SetScheduleFoodScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
+        val context = LocalContext.current
+        val today = LocalDate.now()
+        var selectedDates by remember { mutableStateOf(setOf(uiState.selectedDate)) }
+        var activeRepeatType by remember { mutableStateOf<String?>(null) }
+
+        val previewMacro = uiState.previewMacro ?: MacroNutrient(20f, 40f, 10f)
+        val foodName = uiState.previewFoodName.ifBlank { "Món ăn đã chọn" }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("SET LỊCH ĂN UỐNG 📅", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        Box(modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }) {
+                            Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Món ăn đang lên lịch:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text(foodName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Text("${previewMacro.calories.toInt()} kcal", fontSize = 15.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Chọn thủ công ngày (${selectedDates.size} ngày):", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                val d = selectedDates.firstOrNull() ?: uiState.selectedDate
+                                DatePickerDialog(
+                                    context,
+                                    { _, y, m, day ->
+                                        val picked = LocalDate.of(y, m + 1, day)
+                                        selectedDates = if (picked in selectedDates) selectedDates - picked else selectedDates + picked
+                                    },
+                                    d.year,
+                                    d.monthValue - 1,
+                                    d.dayOfMonth
+                                ).show()
+                            },
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                    ) {
+                        Text("📅 + Mở Lịch", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (offset in -2..14) {
+                        val d = today.plusDays(offset.toLong())
+                        val isSelected = d in selectedDates
+                        val dayOfWeekStr = when (d.dayOfWeek) {
+                            DayOfWeek.MONDAY -> "T2"
+                            DayOfWeek.TUESDAY -> "T3"
+                            DayOfWeek.WEDNESDAY -> "T4"
+                            DayOfWeek.THURSDAY -> "T5"
+                            DayOfWeek.FRIDAY -> "T6"
+                            DayOfWeek.SATURDAY -> "T7"
+                            DayOfWeek.SUNDAY -> "CN"
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .width(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    selectedDates = if (isSelected) selectedDates - d else selectedDates + d
+                                },
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(dayOfWeekStr, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF94A3B8))
+                                Text("${d.dayOfMonth}", fontSize = 14.sp, fontWeight = FontWeight.Black, color = if (isSelected) Color.Black else Color.White)
+                                Text(if (isSelected) "✓" else "•", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF64748B))
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text("Lặp lại theo chu kỳ:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val baseDate = selectedDates.firstOrNull() ?: uiState.selectedDate
+                val dayOfWeekVi = when (baseDate.dayOfWeek) {
+                    DayOfWeek.MONDAY -> "Thứ 2"
+                    DayOfWeek.TUESDAY -> "Thứ 3"
+                    DayOfWeek.WEDNESDAY -> "Thứ 4"
+                    DayOfWeek.THURSDAY -> "Thứ 5"
+                    DayOfWeek.FRIDAY -> "Thứ 6"
+                    DayOfWeek.SATURDAY -> "Thứ 7"
+                    DayOfWeek.SUNDAY -> "Chủ Nhật"
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "DAILY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "DAILY"
+                                    selectedDates = (0..29).map { baseDate.plusDays(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "DAILY") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "DAILY") MaterialTheme.colorScheme.primary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🔁", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng ngày (30 ngày liên tiếp)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Áp dụng món ăn vào mọi ngày", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "WEEKLY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "WEEKLY"
+                                    selectedDates = (0..11).map { baseDate.plusWeeks(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "WEEKLY") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "WEEKLY") MaterialTheme.colorScheme.primary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🗓️", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng tuần vào $dayOfWeekVi (12 tuần)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Lặp lại định kỳ vào mỗi $dayOfWeekVi", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "MONTHLY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "MONTHLY"
+                                    selectedDates = (0..5).map { baseDate.plusMonths(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "MONTHLY") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "MONTHLY") MaterialTheme.colorScheme.primary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("📆", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng tháng vào ngày ${baseDate.dayOfMonth} (6 tháng)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Lặp lại vào ngày ${baseDate.dayOfMonth} hàng tháng", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Button(
+                    onClick = {
+                        val finalDates = selectedDates.ifEmpty { setOf(uiState.selectedDate) }.toList()
+                        stateHolder.commitFoodLogMultiDays(foodName, previewMacro, finalDates)
+                    },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Đẩy Lịch Cho ${selectedDates.size} Ngày Đã Chọn", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 3.7. SET LỊCH CHO TẬP LUYỆN
+    // -----------------------------------------------------------------------------------------
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun SetScheduleWorkoutScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
+        val context = LocalContext.current
+        val today = LocalDate.now()
+        var selectedDates by remember { mutableStateOf(setOf(uiState.selectedDate)) }
+        var activeRepeatType by remember { mutableStateOf<String?>(null) }
+
+        val workoutName = uiState.tempWorkoutName.ifBlank { "Bài tập đã chọn" }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("SET LỊCH TẬP LUYỆN 📅", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        Box(modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }) {
+                            Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text("Bài tập lên lịch:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                        Text(workoutName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Text(uiState.tempWorkoutDetail, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Chọn thủ công ngày (${selectedDates.size} ngày):", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                val d = selectedDates.firstOrNull() ?: uiState.selectedDate
+                                DatePickerDialog(
+                                    context,
+                                    { _, y, m, day ->
+                                        val picked = LocalDate.of(y, m + 1, day)
+                                        selectedDates = if (picked in selectedDates) selectedDates - picked else selectedDates + picked
+                                    },
+                                    d.year,
+                                    d.monthValue - 1,
+                                    d.dayOfMonth
+                                ).show()
+                            },
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                    ) {
+                        Text("📅 + Mở Lịch", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (offset in -2..14) {
+                        val d = today.plusDays(offset.toLong())
+                        val isSelected = d in selectedDates
+                        val dayOfWeekStr = when (d.dayOfWeek) {
+                            DayOfWeek.MONDAY -> "T2"
+                            DayOfWeek.TUESDAY -> "T3"
+                            DayOfWeek.WEDNESDAY -> "T4"
+                            DayOfWeek.THURSDAY -> "T5"
+                            DayOfWeek.FRIDAY -> "T6"
+                            DayOfWeek.SATURDAY -> "T7"
+                            DayOfWeek.SUNDAY -> "CN"
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .width(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    selectedDates = if (isSelected) selectedDates - d else selectedDates + d
+                                },
+                            color = if (isSelected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.surface,
+                            border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(dayOfWeekStr, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF94A3B8))
+                                Text("${d.dayOfMonth}", fontSize = 14.sp, fontWeight = FontWeight.Black, color = if (isSelected) Color.Black else Color.White)
+                                Text(if (isSelected) "✓" else "•", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isSelected) Color.Black else Color(0xFF64748B))
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text("Lặp lại theo chu kỳ:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val baseDate = selectedDates.firstOrNull() ?: uiState.selectedDate
+                val dayOfWeekVi = when (baseDate.dayOfWeek) {
+                    DayOfWeek.MONDAY -> "Thứ 2"
+                    DayOfWeek.TUESDAY -> "Thứ 3"
+                    DayOfWeek.WEDNESDAY -> "Thứ 4"
+                    DayOfWeek.THURSDAY -> "Thứ 5"
+                    DayOfWeek.FRIDAY -> "Thứ 6"
+                    DayOfWeek.SATURDAY -> "Thứ 7"
+                    DayOfWeek.SUNDAY -> "Chủ Nhật"
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "DAILY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "DAILY"
+                                    selectedDates = (0..29).map { baseDate.plusDays(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "DAILY") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "DAILY") MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🔁", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng ngày (30 ngày liên tiếp)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Áp dụng bài tập vào mọi ngày", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "WEEKLY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "WEEKLY"
+                                    selectedDates = (0..11).map { baseDate.plusWeeks(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "WEEKLY") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "WEEKLY") MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🗓️", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng tuần vào $dayOfWeekVi (12 tuần)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Lặp lại vào mỗi $dayOfWeekVi", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                if (activeRepeatType == "MONTHLY") {
+                                    activeRepeatType = null
+                                    selectedDates = setOf(uiState.selectedDate)
+                                } else {
+                                    activeRepeatType = "MONTHLY"
+                                    selectedDates = (0..5).map { baseDate.plusMonths(it.toLong()) }.toSet()
+                                }
+                            },
+                        color = if (activeRepeatType == "MONTHLY") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (activeRepeatType == "MONTHLY") MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("📆", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Hàng tháng vào ngày ${baseDate.dayOfMonth} (6 tháng)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Lặp lại vào ngày ${baseDate.dayOfMonth} hàng tháng", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Button(
+                    onClick = {
+                        val finalDates = selectedDates.ifEmpty { setOf(uiState.selectedDate) }.toList()
+                        stateHolder.addWorkoutScheduleMultiDays(
+                            uiState.tempWorkoutName,
+                            uiState.tempWorkoutCategory,
+                            uiState.tempWorkoutDetail,
+                            uiState.tempWorkoutMet,
+                            uiState.tempWorkoutDuration,
+                            uiState.tempWorkoutManualCal,
+                            finalDates
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                ) {
+                    Text("Đẩy Lịch Cho ${selectedDates.size} Ngày Đã Chọn", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 3.8. ANALYTICS SCREEN
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -3051,9 +3681,5 @@ class MainActivity : ComponentActivity() {
                 Spacer(modifier = Modifier.height(30.dp))
             }
         }
-    }
-
-    @Composable
-    fun EditProfileScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
     }
 }
