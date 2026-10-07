@@ -90,6 +90,12 @@ data class MacroNutrient(
         fat = this.fat + other.fat
     )
 
+    operator fun minus(other: MacroNutrient) = MacroNutrient(
+        protein = (this.protein - other.protein).coerceAtLeast(0f),
+        carb = (this.carb - other.carb).coerceAtLeast(0f),
+        fat = (this.fat - other.fat).coerceAtLeast(0f)
+    )
+
     operator fun times(multiplier: Float) = MacroNutrient(
         protein = this.protein * multiplier,
         carb = this.carb * multiplier,
@@ -109,7 +115,8 @@ data class UserProfile(
     val tdee: Float = 2268f,
     val targetCaloriesIn: Float = 1768f,
     val targetCaloriesOut: Float = 500f,
-    val targetMacros: MacroNutrient = MacroNutrient(132f, 198f, 49f)
+    val targetMacros: MacroNutrient = MacroNutrient(132f, 198f, 49f),
+    val isCustomMacros: Boolean = false
 )
 
 data class FoodPreset(
@@ -184,7 +191,8 @@ data class DailyLog(
     val loggedFoods: List<LoggedFoodItem> = emptyList(),
     val currentMacros: MacroNutrient = MacroNutrient(),
     val totalCaloriesIn: Float = 0f,
-    val activeCaloriesOut: Float = 0f
+    val activeCaloriesOut: Float = 0f,
+    val weightKg: Float? = null
 ) {
     fun hasData(): Boolean = totalCaloriesIn > 0f || activeCaloriesOut > 0f || loggedFoods.isNotEmpty()
     fun hasFoodData(): Boolean = totalCaloriesIn > 0f || loggedFoods.isNotEmpty()
@@ -209,6 +217,7 @@ data class AppState(
     val selectedDate: LocalDate = LocalDate.now(),
     val userLogs: Map<String, Map<LocalDate, DailyLog>> = emptyMap(),
     val userWorkouts: Map<String, List<WorkoutItem>> = emptyMap(),
+    val userWeightHistory: Map<String, Map<LocalDate, Float>> = emptyMap(),
     val previewMacro: MacroNutrient? = null,
     val previewFoodName: String = "",
     val previewPortionMultiplier: Float = 1.0f,
@@ -225,10 +234,14 @@ data class AppState(
     val tempWorkoutMet: Float = 5.5f,
     val tempWorkoutDuration: Float = 30f,
     val tempWorkoutManualCal: Float = 0f,
+    val editingProfileId: String? = null,
     val backStack: List<Screen> = listOf(Screen.ONBOARDING)
 ) {
     val activeUser: UserProfile
         get() = profiles.find { it.id == activeProfileId } ?: UserProfile()
+
+    val editingUser: UserProfile
+        get() = profiles.find { it.id == (editingProfileId ?: activeProfileId) } ?: activeUser
 
     val currentScreen: Screen
         get() = backStack.lastOrNull() ?: if (isOnboarded) Screen.DASHBOARD else Screen.ONBOARDING
@@ -238,10 +251,13 @@ data class AppState(
 
     val currentWorkouts: List<WorkoutItem>
         get() = (userWorkouts[activeProfileId] ?: emptyList()).filter { it.date == selectedDate }
+
+    val currentDayWeight: Float
+        get() = userWeightHistory[activeProfileId]?.get(selectedDate) ?: activeUser.weightKg
 }
 
 class CalorieTrackerStateHolder(private val context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("calorie_tracker_v9_storage", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = context.getSharedPreferences("calorie_tracker_v10_storage", Context.MODE_PRIVATE)
 
     private val _uiState = MutableStateFlow(AppState())
     val uiState: StateFlow<AppState> = _uiState.asStateFlow()
@@ -298,25 +314,25 @@ class CalorieTrackerStateHolder(private val context: Context) {
     val workoutCatalog = listOf(
         // GYM / TẠ
         WorkoutPreset("w1", "Đẩy ngực ngang (Bench Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 60f, "5:30", 25f, 5.5f, "Gym"),
-        WorkoutPreset("w2", "Đẩy ngực dốc lên (Incline Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 50f, "5:30", 25f, 5.5f, "Gym"),
-        WorkoutPreset("w3", "Kéo xô lưng (Lat Pulldown)", WorkoutCategory.GYM, "🏋️", 4, 12, 45f, "5:30", 25f, 5.0f, "Gym"),
-        WorkoutPreset("w4", "Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, "🏋️", 4, 8, 80f, "5:30", 30f, 6.0f, "Gym"),
-        WorkoutPreset("w5", "Đạp đùi máy nghiêng (Leg Press)", WorkoutCategory.GYM, "🏋️", 4, 12, 100f, "5:30", 25f, 5.5f, "Gym"),
-        WorkoutPreset("w6", "Kéo lưng đùi (Deadlift)", WorkoutCategory.GYM, "🏋️", 3, 6, 90f, "5:30", 25f, 6.5f, "Gym"),
-        WorkoutPreset("w7", "Đẩy vai tạ đơn (Shoulder Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 16f, "5:30", 20f, 5.0f, "Gym"),
-        WorkoutPreset("w8", "Cuốn tay trước (Bicep Curl)", WorkoutCategory.GYM, "🏋️", 3, 12, 12f, "5:30", 20f, 4.5f, "Gym"),
-        WorkoutPreset("w9", "Gập bụng (Abdominal Crunch)", WorkoutCategory.GYM, "🏋️", 4, 20, 0f, "5:30", 15f, 4.0f, "Gym"),
-        WorkoutPreset("w10", "Hít xà đơn (Pull-up)", WorkoutCategory.GYM, "🏋️", 4, 8, 0f, "5:30", 20f, 6.0f, "Gym"),
-        WorkoutPreset("w11", "Hít đất / Chống đẩy (Push-up)", WorkoutCategory.GYM, "🏋️", 4, 15, 0f, "5:30", 20f, 5.0f, "Gym"),
+        WorkoutPreset("w2", "Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, "🏋️", 4, 8, 80f, "5:30", 30f, 6.0f, "Gym"),
+        WorkoutPreset("w3", "Kéo lưng xô (Deadlift)", WorkoutCategory.GYM, "🏋️", 4, 6, 90f, "5:30", 30f, 6.5f, "Gym"),
+        WorkoutPreset("w4", "Hít xà đơn (Pull Up)", WorkoutCategory.GYM, "🧗", 4, 8, 0f, "5:30", 20f, 5.0f, "Gym"),
+        WorkoutPreset("w5", "Đẩy vai đòn tạ (Overhead Press)", WorkoutCategory.GYM, "🏋️", 4, 10, 40f, "5:30", 25f, 5.0f, "Gym"),
+        WorkoutPreset("w6", "Chống đẩy hít đất (Push Up)", WorkoutCategory.GYM, "💪", 4, 15, 0f, "5:30", 15f, 4.5f, "Gym"),
+        WorkoutPreset("w7", "Gập bụng con lăn (Ab Wheel)", WorkoutCategory.GYM, "🧘", 4, 12, 0f, "5:30", 15f, 4.0f, "Gym"),
+        WorkoutPreset("w8", "Cuốn bắp tay trước (Bicep Curl)", WorkoutCategory.GYM, "💪", 4, 12, 14f, "5:30", 20f, 4.0f, "Gym"),
+        WorkoutPreset("w9", "Kéo cáp tay sau (Tricep Pushdown)", WorkoutCategory.GYM, "💪", 4, 12, 25f, "5:30", 20f, 4.0f, "Gym"),
+        WorkoutPreset("w10", "Nâng tạ sang hai bên vai (Lateral Raise)", WorkoutCategory.GYM, "🏋️", 4, 15, 8f, "5:30", 15f, 3.8f, "Gym"),
+        WorkoutPreset("w11", "Đạp đùi máy nghiêng (Leg Press)", WorkoutCategory.GYM, "🦵", 4, 12, 120f, "5:30", 25f, 5.5f, "Gym"),
+        WorkoutPreset("w12", "Nhún ngực xà kép (Dips)", WorkoutCategory.GYM, "💪", 4, 10, 0f, "5:30", 20f, 5.2f, "Gym"),
 
-        // THỂ THAO / CHẠY
-        WorkoutPreset("w12", "Cầu lông đối kháng đôi", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Đấu đôi", 45f, 6.5f, "Thể thao"),
-        WorkoutPreset("w13", "Cầu lông đơn cường độ cao", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Đấu đơn", 45f, 7.5f, "Thể thao"),
-        WorkoutPreset("w14", "Bóng đá sân cỏ 7 người", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Thi đấu", 60f, 8.5f, "Thể thao"),
-        WorkoutPreset("w15", "Futsal / Bóng đá sân 5", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Cường độ cao", 50f, 9.0f, "Thể thao"),
-        WorkoutPreset("w16", "Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "5:30", 30f, 9.8f, "Chạy"),
-        WorkoutPreset("w17", "Chạy nhẹ nhàng hồi phục", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "6:30", 35f, 8.0f, "Chạy"),
-        WorkoutPreset("w18", "Đi bộ nhanh (Brisk Walking)", WorkoutCategory.CARDIO, "🚶", 1, 1, 0f, "9:30", 45f, 4.5f, "Chạy"),
+        // CARDIO & THỂ THAO
+        WorkoutPreset("w13", "Chạy bộ ngoài trời", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "5:30", 30f, 9.8f, "Chạy bộ"),
+        WorkoutPreset("w14", "Chạy máy Pace 6:00", WorkoutCategory.CARDIO, "🏃", 1, 1, 0f, "6:00", 30f, 8.5f, "Chạy bộ"),
+        WorkoutPreset("w15", "Đi bộ dốc máy (Incline Walk)", WorkoutCategory.CARDIO, "🚶", 1, 1, 0f, "10:00", 40f, 6.0f, "Đi bộ"),
+        WorkoutPreset("w16", "Đá bóng sân cỏ nhân tạo (7 người)", WorkoutCategory.CARDIO, "⚽", 1, 1, 0f, "Tranh chấp", 60f, 8.0f, "Thể thao"),
+        WorkoutPreset("w17", "Cầu lông đánh đôi", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Nhịp độ vừa", 45f, 5.8f, "Thể thao"),
+        WorkoutPreset("w18", "Cầu lông đánh đơn cường độ cao", WorkoutCategory.CARDIO, "🏸", 1, 1, 0f, "Cường độ cao", 45f, 7.5f, "Thể thao"),
         WorkoutPreset("w19", "Bơi sải tốc độ cao", WorkoutCategory.CARDIO, "🏊", 1, 1, 0f, "Liên tục", 40f, 8.5f, "Bơi"),
         WorkoutPreset("w20", "Bơi ếch vừa sức", WorkoutCategory.CARDIO, "🏊", 1, 1, 0f, "Vừa sức", 40f, 6.0f, "Bơi"),
         WorkoutPreset("w21", "Đạp xe ngoài trời (18-22 km/h)", WorkoutCategory.CARDIO, "🚴", 1, 1, 0f, "20 km/h", 45f, 7.5f, "Đạp xe"),
@@ -362,7 +378,8 @@ class CalorieTrackerStateHolder(private val context: Context) {
                                 o.getDouble("macroP").toFloat(),
                                 o.getDouble("macroC").toFloat(),
                                 o.getDouble("macroF").toFloat()
-                            )
+                            ),
+                            isCustomMacros = o.optBoolean("isCustomMacros", false)
                         )
                     )
                 }
@@ -375,6 +392,23 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
 
         val activeId = prefs.getString("active_profile_id", loadedProfiles.first().id) ?: loadedProfiles.first().id
+
+        // Load weight history
+        val userWeightHistoryMap = mutableMapOf<String, MutableMap<LocalDate, Float>>()
+        val weightsJson = prefs.getString("user_weights_json", null)
+        if (weightsJson != null) {
+            try {
+                val rootObj = JSONObject(weightsJson)
+                rootObj.keys().forEach { uId ->
+                    val uMap = mutableMapOf<LocalDate, Float>()
+                    val uObj = rootObj.getJSONObject(uId)
+                    uObj.keys().forEach { dKey ->
+                        uMap[LocalDate.parse(dKey)] = uObj.getDouble(dKey).toFloat()
+                    }
+                    userWeightHistoryMap[uId] = uMap
+                }
+            } catch (e: Exception) { e.printStackTrace() }
+        }
 
         // Load logs
         val userLogsMap = mutableMapOf<String, MutableMap<LocalDate, DailyLog>>()
@@ -419,7 +453,8 @@ class CalorieTrackerStateHolder(private val context: Context) {
                                 item.getDouble("f").toFloat()
                             ),
                             totalCaloriesIn = item.getDouble("totalIn").toFloat(),
-                            activeCaloriesOut = item.getDouble("totalOut").toFloat()
+                            activeCaloriesOut = item.getDouble("totalOut").toFloat(),
+                            weightKg = if (item.has("w")) item.getDouble("w").toFloat() else null
                         )
                     }
                     userLogsMap[uId] = dateMap
@@ -504,6 +539,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
                 activeProfileId = activeId,
                 userLogs = userLogsMap,
                 userWorkouts = userWorkoutsMap,
+                userWeightHistory = userWeightHistoryMap,
                 backStack = listOf(Screen.DASHBOARD)
             )
         }
@@ -532,9 +568,21 @@ class CalorieTrackerStateHolder(private val context: Context) {
             o.put("macroP", p.targetMacros.protein)
             o.put("macroC", p.targetMacros.carb)
             o.put("macroF", p.targetMacros.fat)
+            o.put("isCustomMacros", p.isCustomMacros)
             pArr.put(o)
         }
         editor.putString("profiles_json", pArr.toString())
+
+        // Save weights
+        val wHistoryObj = JSONObject()
+        state.userWeightHistory.forEach { (uId, map) ->
+            val uObj = JSONObject()
+            map.forEach { (d, w) ->
+                uObj.put(d.toString(), w)
+            }
+            wHistoryObj.put(uId, uObj)
+        }
+        editor.putString("user_weights_json", wHistoryObj.toString())
 
         val logsRoot = JSONObject()
         state.userLogs.forEach { (uId, map) ->
@@ -546,6 +594,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
                 lItem.put("f", log.currentMacros.fat)
                 lItem.put("totalIn", log.totalCaloriesIn)
                 lItem.put("totalOut", log.activeCaloriesOut)
+                if (log.weightKg != null) lItem.put("w", log.weightKg)
 
                 val fArr = JSONArray()
                 log.loggedFoods.forEach { f ->
@@ -620,11 +669,15 @@ class CalorieTrackerStateHolder(private val context: Context) {
         }
     }
 
-    // MULTI-USER MANAGEMENT
+    // MULTI-USER MANAGEMENT & PROFILE EDIT
     fun switchActiveProfile(profileId: String) {
         _uiState.update { it.copy(activeProfileId = profileId) }
         saveStateToDisk()
         navigateBack()
+    }
+
+    fun startEditingProfile(profileId: String) {
+        _uiState.update { it.copy(editingProfileId = profileId, backStack = it.backStack + Screen.EDIT_PROFILE) }
     }
 
     fun addNewProfile(name: String, age: Int, gender: Gender, heightCm: Float, weightKg: Float, goal: Goal) {
@@ -640,8 +693,34 @@ class CalorieTrackerStateHolder(private val context: Context) {
         navigateBack()
     }
 
+    fun updateProfile(updatedProfile: UserProfile) {
+        val recalculated = if (!updatedProfile.isCustomMacros) {
+            buildProfile(
+                id = updatedProfile.id,
+                name = updatedProfile.name,
+                age = updatedProfile.age,
+                gender = updatedProfile.gender,
+                heightCm = updatedProfile.heightCm,
+                weightKg = updatedProfile.weightKg,
+                goal = updatedProfile.goal
+            )
+        } else {
+            updatedProfile
+        }
+
+        val updatedList = _uiState.value.profiles.map {
+            if (it.id == recalculated.id) recalculated else it
+        }
+
+        _uiState.update {
+            it.copy(profiles = updatedList)
+        }
+        saveStateToDisk()
+        navigateBack()
+    }
+
     fun completeFirstOnboarding(name: String, age: Int, gender: Gender, heightCm: Float, weightKg: Float, goal: Goal) {
-        val firstUser = buildProfile("u_primary", name.ifBlank { "Hồ sơ chính" }, age, gender, heightCm, weightKg, goal)
+        val firstUser = buildProfile("u_primary", name.ifBlank { "Tôi" }, age, gender, heightCm, weightKg, goal)
         _uiState.update {
             it.copy(
                 isOnboarded = true,
@@ -653,16 +732,39 @@ class CalorieTrackerStateHolder(private val context: Context) {
         saveStateToDisk()
     }
 
-    private fun buildProfile(id: String, name: String, age: Int, gender: Gender, heightCm: Float, weightKg: Float, goal: Goal): UserProfile {
+    fun buildProfile(
+        id: String,
+        name: String,
+        age: Int,
+        gender: Gender,
+        heightCm: Float,
+        weightKg: Float,
+        goal: Goal,
+        customTargetIn: Float? = null,
+        customMacros: MacroNutrient? = null
+    ): UserProfile {
         val s = if (gender == Gender.MALE) 5f else -161f
         val bmr = (10f * weightKg) + (6.25f * heightCm) - (5f * age) + s
         val tdee = bmr * 1.35f
-        val targetIn = (tdee + goal.calorieDelta).coerceAtLeast(1200f)
-        val targetOut = 500f
+        val targetIn = customTargetIn ?: (tdee + goal.calorieDelta).coerceAtLeast(1200f)
+        val targetOut = when (goal) {
+            Goal.LOSE_FAT -> 450f
+            Goal.MAINTAIN -> 350f
+            Goal.BUILD_MUSCLE -> 300f
+        }
 
-        val targetProtein = (targetIn * 0.30f) / 4f
-        val targetCarb = (targetIn * 0.45f) / 4f
-        val targetFat = (targetIn * 0.25f) / 9f
+        val targetMacros = if (customMacros != null) {
+            customMacros
+        } else {
+            val pGrams = when (goal) {
+                Goal.LOSE_FAT -> 2.2f * weightKg
+                Goal.BUILD_MUSCLE -> 2.0f * weightKg
+                Goal.MAINTAIN -> 1.8f * weightKg
+            }
+            val fGrams = ((targetIn * 0.25f) / 9f)
+            val cGrams = ((targetIn - (pGrams * 4f) - (fGrams * 9f)) / 4f).coerceAtLeast(0f)
+            MacroNutrient(pGrams, cGrams, fGrams)
+        }
 
         return UserProfile(
             id = id,
@@ -676,8 +778,63 @@ class CalorieTrackerStateHolder(private val context: Context) {
             tdee = tdee,
             targetCaloriesIn = targetIn,
             targetCaloriesOut = targetOut,
-            targetMacros = MacroNutrient(targetProtein, targetCarb, targetFat)
+            targetMacros = targetMacros,
+            isCustomMacros = (customMacros != null || customTargetIn != null)
         )
+    }
+
+    // WEIGHT TRACKING SYSTEM & AUTO-RECALCULATE
+    fun updateWeight(newWeightKg: Float, targetDate: LocalDate = _uiState.value.selectedDate) {
+        val state = _uiState.value
+        val uId = state.activeProfileId
+        val currentUser = state.activeUser
+
+        // 1. Update Weight History
+        val userWeightMap = state.userWeightHistory[uId]?.toMutableMap() ?: mutableMapOf()
+        userWeightMap[targetDate] = newWeightKg
+        val updatedWeightHistory = state.userWeightHistory.toMutableMap()
+        updatedWeightHistory[uId] = userWeightMap
+
+        // 2. Update DailyLog
+        val userDateMap = state.userLogs[uId]?.toMutableMap() ?: mutableMapOf()
+        val currentLog = userDateMap[targetDate] ?: DailyLog(date = targetDate)
+        userDateMap[targetDate] = currentLog.copy(weightKg = newWeightKg)
+        val updatedUserLogs = state.userLogs.toMutableMap()
+        updatedUserLogs[uId] = userDateMap
+
+        // 3. Recalculate Active Profile BMR, TDEE, Target In, Target Out & Macros
+        val updatedUser = if (!currentUser.isCustomMacros) {
+            buildProfile(
+                id = currentUser.id,
+                name = currentUser.name,
+                age = currentUser.age,
+                gender = currentUser.gender,
+                heightCm = currentUser.heightCm,
+                weightKg = newWeightKg,
+                goal = currentUser.goal
+            )
+        } else {
+            // Keep custom macros, update BMR and weight
+            val s = if (currentUser.gender == Gender.MALE) 5f else -161f
+            val newBmr = (10f * newWeightKg) + (6.25f * currentUser.heightCm) - (5f * currentUser.age) + s
+            val newTdee = newBmr * 1.35f
+            currentUser.copy(
+                weightKg = newWeightKg,
+                bmr = newBmr,
+                tdee = newTdee
+            )
+        }
+
+        val updatedProfiles = state.profiles.map { if (it.id == uId) updatedUser else it }
+
+        _uiState.update {
+            it.copy(
+                profiles = updatedProfiles,
+                userWeightHistory = updatedWeightHistory,
+                userLogs = updatedUserLogs
+            )
+        }
+        saveStateToDisk()
     }
 
     // DATE NAVIGATION
@@ -811,6 +968,30 @@ class CalorieTrackerStateHolder(private val context: Context) {
         navigateBack()
     }
 
+    fun deleteFoodItem(foodId: String, targetDate: LocalDate = _uiState.value.selectedDate) {
+        val state = _uiState.value
+        val uId = state.activeProfileId
+        val userDateMap = state.userLogs[uId]?.toMutableMap() ?: mutableMapOf()
+        val targetLog = userDateMap[targetDate] ?: return
+
+        val itemToDelete = targetLog.loggedFoods.find { it.id == foodId } ?: return
+        val newFoods = targetLog.loggedFoods.filter { it.id != foodId }
+        val newMacros = targetLog.currentMacros - itemToDelete.macro
+        val newTotalIn = (targetLog.totalCaloriesIn - itemToDelete.macro.calories).coerceAtLeast(0f)
+
+        userDateMap[targetDate] = targetLog.copy(
+            loggedFoods = newFoods,
+            currentMacros = newMacros,
+            totalCaloriesIn = newTotalIn
+        )
+
+        val updatedUserLogs = state.userLogs.toMutableMap()
+        updatedUserLogs[uId] = userDateMap
+
+        _uiState.update { it.copy(userLogs = updatedUserLogs) }
+        saveStateToDisk()
+    }
+
     fun commitFoodLogMultiDays(foodName: String, macro: MacroNutrient, dates: List<LocalDate>) {
         val state = _uiState.value
         val uId = state.activeProfileId
@@ -894,6 +1075,38 @@ class CalorieTrackerStateHolder(private val context: Context) {
         saveStateToDisk()
     }
 
+    fun deleteWorkoutItem(workoutId: String) {
+        val state = _uiState.value
+        val uId = state.activeProfileId
+        val workouts = state.userWorkouts[uId]?.toMutableList() ?: return
+        val itemToDelete = workouts.find { it.id == workoutId } ?: return
+
+        workouts.remove(itemToDelete)
+
+        val updatedUserWorkouts = state.userWorkouts.toMutableMap()
+        updatedUserWorkouts[uId] = workouts
+
+        val userDateMap = state.userLogs[uId]?.toMutableMap() ?: mutableMapOf()
+        val currentLog = userDateMap[itemToDelete.date] ?: DailyLog(date = itemToDelete.date)
+
+        if (itemToDelete.isCompleted) {
+            val burned = itemToDelete.calculateBurnedCalories(state.activeUser.weightKg)
+            val newActiveOut = (currentLog.activeCaloriesOut - burned).coerceAtLeast(0f)
+            userDateMap[itemToDelete.date] = currentLog.copy(activeCaloriesOut = newActiveOut)
+        }
+
+        val updatedUserLogs = state.userLogs.toMutableMap()
+        updatedUserLogs[uId] = userDateMap
+
+        _uiState.update {
+            it.copy(
+                userWorkouts = updatedUserWorkouts,
+                userLogs = updatedUserLogs
+            )
+        }
+        saveStateToDisk()
+    }
+
     fun toggleWorkoutCompletion(workoutId: String) {
         val state = _uiState.value
         val uId = state.activeProfileId
@@ -940,6 +1153,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
         val uId = state.activeProfileId
         val user = state.activeUser
         val userLogs = state.userLogs[uId] ?: emptyMap()
+        val userWeights = state.userWeightHistory[uId] ?: emptyMap()
 
         val logsList = mutableListOf<DailyLog>()
         for (i in (days - 1) downTo 0) {
@@ -957,12 +1171,21 @@ class CalorieTrackerStateHolder(private val context: Context) {
 
         val target = user.targetCaloriesIn
 
+        val weightList = mutableListOf<Pair<LocalDate, Float>>()
+        for (i in (days - 1) downTo 0) {
+            val date = state.selectedDate.minusDays(i.toLong())
+            val w = userWeights[date] ?: userLogs[date]?.weightKg
+            if (w != null) {
+                weightList.add(date to w)
+            }
+        }
+
         val advice = buildString {
             append("🩺 Đánh giá dinh dưỡng (Tiêu chuẩn WHO) cho ${user.name} ($days ngày):\n")
             append("• Mức nạp trung bình: ${mean.toInt()} kcal/ngày (Mục tiêu: ${target.toInt()} kcal).\n")
 
             val diff = mean - target
-            val pctDiff = (diff / target) * 100f
+            val pctDiff = if (target > 0f) (diff / target) * 100f else 0f
 
             when {
                 abs(pctDiff) <= 12f -> {
@@ -983,7 +1206,7 @@ class CalorieTrackerStateHolder(private val context: Context) {
             }
         }
 
-        return AnalyticsResult(days, mean, stdDev, advice, logsList)
+        return AnalyticsResult(days, mean, stdDev, advice, logsList, weightList)
     }
 }
 
@@ -992,7 +1215,8 @@ data class AnalyticsResult(
     val meanCalories: Float,
     val stdDev: Float,
     val adviceText: String,
-    val logs: List<DailyLog>
+    val logs: List<DailyLog>,
+    val weightHistory: List<Pair<LocalDate, Float>>
 )
 
 // =========================================================================================
@@ -1060,12 +1284,12 @@ class MainActivity : ComponentActivity() {
                         Screen.ONBOARDING -> OnboardingScreen(stateHolder, uiState)
                         Screen.DASHBOARD -> DashboardScreen(stateHolder, uiState)
                         Screen.PROFILE_SWITCHER -> ProfileSwitcherScreen(stateHolder, uiState)
+                        Screen.EDIT_PROFILE -> EditProfileScreen(stateHolder, uiState)
                         Screen.ADD_FOOD -> AddFoodScreen(stateHolder, uiState)
                         Screen.CREATE_WORKOUT -> CreateWorkoutScreen(stateHolder, uiState)
                         Screen.SET_SCHEDULE_FOOD -> SetScheduleFoodScreen(stateHolder, uiState)
                         Screen.SET_SCHEDULE_WORKOUT -> SetScheduleWorkoutScreen(stateHolder, uiState)
                         Screen.ANALYTICS -> AnalyticsScreen(stateHolder)
-                        Screen.EDIT_PROFILE -> {}
                     }
                 }
             }
@@ -1073,7 +1297,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.1. ONBOARDING SCREEN
+    // 3.1. ONBOARDING SCREEN (CÓ BẢNG TỔNG QUAN THÔNG SỐ VÀ GỢI Ý TUẦN TẬP)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -1086,7 +1310,17 @@ class MainActivity : ComponentActivity() {
         var gender by remember { mutableStateOf(Gender.MALE) }
         var goal by remember { mutableStateOf(Goal.LOSE_FAT) }
 
+        var showSummaryStep by remember { mutableStateOf(false) }
+
         val isCreatingSecondary = uiState.isOnboarded
+
+        val age = ageText.toIntOrNull() ?: 24
+        val height = heightText.toFloatOrNull() ?: 175f
+        val weight = weightText.toFloatOrNull() ?: 70f
+
+        val previewProfile = remember(name, age, gender, height, weight, goal) {
+            stateHolder.buildProfile("preview", name, age, gender, height, weight, goal)
+        }
 
         Column(
             modifier = Modifier
@@ -1104,143 +1338,579 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.size(72.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("🏋️", fontSize = 36.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                if (isCreatingSecondary) "Thêm Hồ Sơ Cá Nhân" else "Khởi Tạo Mục Tiêu Calo",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Black,
-                color = Color.White
-            )
-            Text(
-                "Tính toán BMR & TDEE chuẩn Mifflin-St Jeor",
-                fontSize = 12.sp,
-                color = Color(0xFF94A3B8),
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Tên người dùng") },
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = { gender = Gender.MALE },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (gender == Gender.MALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    modifier = Modifier.weight(1f).height(44.dp)
-                ) {
-                    Text("Nam ♂", fontWeight = FontWeight.Bold, color = if (gender == Gender.MALE) Color.Black else Color.White)
-                }
-                Button(
-                    onClick = { gender = Gender.FEMALE },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (gender == Gender.FEMALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    modifier = Modifier.weight(1f).height(44.dp)
-                ) {
-                    Text("Nữ ♀", fontWeight = FontWeight.Bold, color = if (gender == Gender.FEMALE) Color.Black else Color.White)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = ageText,
-                    onValueChange = { ageText = it },
-                    label = { Text("Tuổi") },
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = heightText,
-                    onValueChange = { heightText = it },
-                    label = { Text("Cao (cm)") },
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = weightText,
-                    onValueChange = { weightText = it },
-                    label = { Text("Nặng (kg)") },
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text("Mục tiêu thể hình:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray, modifier = Modifier.align(Alignment.Start))
-            Spacer(modifier = Modifier.height(6.dp))
-            Goal.values().forEach { g ->
+            if (!showSummaryStep) {
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 3.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { goal = g },
-                    color = if (goal == g) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF101624),
-                    border = if (goal == g) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(68.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = goal == g, onClick = { goal = g })
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(g.label, fontSize = 13.sp, fontWeight = if (goal == g) FontWeight.Bold else FontWeight.Normal, color = Color.White)
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("🏋️", fontSize = 32.sp)
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    if (isCreatingSecondary) "Thêm Hồ Sơ Cá Nhân" else "Khởi Tạo Mục Tiêu Calo",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White
+                )
+                Text(
+                    "Tính toán BMR & TDEE chuẩn Mifflin-St Jeor",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8),
+                    textAlign = TextAlign.Center
+                )
 
-            Button(
-                onClick = {
-                    val age = ageText.toIntOrNull() ?: 24
-                    val height = heightText.toFloatOrNull() ?: 175f
-                    val weight = weightText.toFloatOrNull() ?: 70f
-                    if (isCreatingSecondary) {
-                        stateHolder.addNewProfile(name, age, gender, height, weight, goal)
-                    } else {
-                        stateHolder.completeFirstOnboarding(name, age, gender, height, weight, goal)
+                Spacer(modifier = Modifier.height(18.dp))
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Tên người dùng") },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { gender = Gender.MALE },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (gender == Gender.MALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    ) {
+                        Text("👨 Nam", fontWeight = FontWeight.Bold, color = if (gender == Gender.MALE) Color.Black else Color.White)
                     }
-                },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Text("Hoàn Thành & Khởi Chạy", fontWeight = FontWeight.Black, fontSize = 15.sp, color = Color.Black)
+                    Button(
+                        onClick = { gender = Gender.FEMALE },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (gender == Gender.FEMALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    ) {
+                        Text("👩 Nữ", fontWeight = FontWeight.Bold, color = if (gender == Gender.FEMALE) Color.Black else Color.White)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = ageText,
+                        onValueChange = { ageText = it },
+                        label = { Text("Tuổi") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = heightText,
+                        onValueChange = { heightText = it },
+                        label = { Text("Cao (cm)") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = weightText,
+                        onValueChange = { weightText = it },
+                        label = { Text("Nặng (kg)") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text("Mục tiêu thể hình:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray, modifier = Modifier.align(Alignment.Start))
+                Spacer(modifier = Modifier.height(6.dp))
+                Goal.values().forEach { g ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { goal = g },
+                        color = if (goal == g) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF101624),
+                        border = if (goal == g) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = goal == g, onClick = { goal = g })
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(g.label, fontSize = 13.sp, fontWeight = if (goal == g) FontWeight.Bold else FontWeight.Normal, color = Color.White)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = { showSummaryStep = true },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Xem Kế Hoạch & Tiếp Tục →", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+            } else {
+                // BẢNG TỔNG QUAN THÔNG SỐ VÀ GỢI Ý TUẦN TẬP
+                Text("📊 Kế Hoạch Mục Tiêu Của Bạn", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color.White)
+                Text("Dựa trên chỉ số cơ thể & mục tiêu đã chọn", fontSize = 12.sp, color = Color(0xFF94A3B8))
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("🔥 BMR (Đốt tự nhiên):", fontSize = 13.sp, color = Color.LightGray)
+                            Text("${previewProfile.bmr.toInt()} kcal/ngày", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("⚡ TDEE (Tổng tiêu hao cơ bản):", fontSize = 13.sp, color = Color.LightGray)
+                            Text("${previewProfile.tdee.toInt()} kcal/ngày", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                        Divider(color = Color(0xFF1E283D))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("🥗 Calo nạp mục tiêu (IN):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text("${previewProfile.targetCaloriesIn.toInt()} kcal/ngày", fontWeight = FontWeight.Black, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("🏃 Calo đốt vận động (OUT):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                            Text("${previewProfile.targetCaloriesOut.toInt()} kcal/ngày", fontWeight = FontWeight.Black, fontSize = 15.sp, color = MaterialTheme.colorScheme.tertiary)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // PHÂN BỔ MACRO
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("🍗 Phân bổ dinh dưỡng mỗi ngày:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• Đạm (Protein):", fontSize = 12.sp, color = Color(0xFF38BDF8))
+                            Text("${previewProfile.targetMacros.protein.toInt()} g", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• Tinh bột (Carb):", fontSize = 12.sp, color = Color(0xFF10B981))
+                            Text("${previewProfile.targetMacros.carb.toInt()} g", fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• Chất béo (Fat):", fontSize = 12.sp, color = Color(0xFFF59E0B))
+                            Text("${previewProfile.targetMacros.fat.toInt()} g", fontWeight = FontWeight.Bold, color = Color(0xFFF59E0B))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // GỢI Ý TẬP LUYỆN
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF0C121E),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f))
+                ) {
+                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("💡", fontSize = 22.sp)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text("Khuyến nghị lịch tập tuần:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
+                            Text("Duy trì 3 - 5 buổi tập/tuần (Gym hoặc Thể thao 30-45 phút) để đạt mục tiêu tốt nhất!", fontSize = 11.sp, color = Color.LightGray)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        if (isCreatingSecondary) {
+                            stateHolder.addNewProfile(name, age, gender, height, weight, goal)
+                        } else {
+                            stateHolder.completeFirstOnboarding(name, age, gender, height, weight, goal)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("✨ Hoàn Tất & Vào Dashboard", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                TextButton(onClick = { showSummaryStep = false }) {
+                    Text("← Chỉnh sửa lại thông tin", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                }
             }
         }
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.2. DASHBOARD SCREEN
+    // 3.2. EDIT PROFILE SCREEN (CHỈNH SỬA HỒ SƠ & TÙY CHỌN MACRO)
+    // -----------------------------------------------------------------------------------------
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun EditProfileScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
+        val user = uiState.editingUser
+
+        var name by remember { mutableStateOf(user.name) }
+        var ageText by remember { mutableStateOf(user.age.toString()) }
+        var heightText by remember { mutableStateOf(user.heightCm.toInt().toString()) }
+        var weightText by remember { mutableStateOf(user.weightKg.toString()) }
+        var gender by remember { mutableStateOf(user.gender) }
+        var goal by remember { mutableStateOf(user.goal) }
+
+        var isCustomMacros by remember { mutableStateOf(user.isCustomMacros) }
+        var customTargetInText by remember { mutableStateOf(user.targetCaloriesIn.toInt().toString()) }
+        var customPText by remember { mutableStateOf(user.targetMacros.protein.toInt().toString()) }
+        var customCText by remember { mutableStateOf(user.targetMacros.carb.toInt().toString()) }
+        var customFText by remember { mutableStateOf(user.targetMacros.fat.toInt().toString()) }
+
+        val currentAge = ageText.toIntOrNull() ?: user.age
+        val currentHeight = heightText.toFloatOrNull() ?: user.heightCm
+        val currentWeight = weightText.toFloatOrNull() ?: user.weightKg
+
+        val preview = remember(name, currentAge, gender, currentHeight, currentWeight, goal, isCustomMacros, customTargetInText, customPText, customCText, customFText) {
+            val customIn = if (isCustomMacros) customTargetInText.toFloatOrNull() else null
+            val customM = if (isCustomMacros) {
+                MacroNutrient(
+                    customPText.toFloatOrNull() ?: 0f,
+                    customCText.toFloatOrNull() ?: 0f,
+                    customFText.toFloatOrNull() ?: 0f
+                )
+            } else null
+            stateHolder.buildProfile(user.id, name, currentAge, gender, currentHeight, currentWeight, goal, customIn, customM)
+        }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Chỉnh Sửa Hồ Sơ", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
+                        ) {
+                            Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Tên người dùng") },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { gender = Gender.MALE },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (gender == Gender.MALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    ) {
+                        Text("👨 Nam", fontWeight = FontWeight.Bold, color = if (gender == Gender.MALE) Color.Black else Color.White)
+                    }
+                    Button(
+                        onClick = { gender = Gender.FEMALE },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (gender == Gender.FEMALE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    ) {
+                        Text("👩 Nữ", fontWeight = FontWeight.Bold, color = if (gender == Gender.FEMALE) Color.Black else Color.White)
+                    }
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = ageText,
+                        onValueChange = { ageText = it },
+                        label = { Text("Tuổi") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = heightText,
+                        onValueChange = { heightText = it },
+                        label = { Text("Cao (cm)") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = weightText,
+                        onValueChange = { weightText = it },
+                        label = { Text("Nặng (kg)") },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Text("Mục tiêu thể hình:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray)
+                Goal.values().forEach { g ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { goal = g },
+                        color = if (goal == g) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF101624),
+                        border = if (goal == g) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = goal == g, onClick = { goal = g })
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(g.label, fontSize = 13.sp, fontWeight = if (goal == g) FontWeight.Bold else FontWeight.Normal, color = Color.White)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // TỰ CHỈNH MACRO NÂNG CAO
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Tự điều chỉnh Macros (Custom Targets)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                Text("Ghi đè calo và macro mục tiêu theo ý bạn", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            }
+                            Switch(checked = isCustomMacros, onCheckedChange = { isCustomMacros = it })
+                        }
+
+                        if (isCustomMacros) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = customTargetInText,
+                                onValueChange = { customTargetInText = it },
+                                label = { Text("Mục tiêu nạp (Kcal)") },
+                                shape = RoundedCornerShape(10.dp),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = customPText,
+                                    onValueChange = { customPText = it },
+                                    label = { Text("Protein (g)") },
+                                    shape = RoundedCornerShape(10.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = customCText,
+                                    onValueChange = { customCText = it },
+                                    label = { Text("Carb (g)") },
+                                    shape = RoundedCornerShape(10.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = customFText,
+                                    onValueChange = { customFText = it },
+                                    label = { Text("Fat (g)") },
+                                    shape = RoundedCornerShape(10.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // PREVIEW THÔNG SỐ TÍNH TOÁN
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF0C121E),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E283D))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("📊 Xem trước thông số mới:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                        Text("• BMR: ${preview.bmr.toInt()} kcal • TDEE: ${preview.tdee.toInt()} kcal", fontSize = 11.sp, color = Color.LightGray)
+                        Text("• Mục tiêu Calo IN: ${preview.targetCaloriesIn.toInt()} kcal • OUT: ${preview.targetCaloriesOut.toInt()} kcal", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Text("• Macros: P: ${preview.targetMacros.protein.toInt()}g | C: ${preview.targetMacros.carb.toInt()}g | F: ${preview.targetMacros.fat.toInt()}g", fontSize = 11.sp, color = Color(0xFF38BDF8))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = {
+                        val finalCustomIn = if (isCustomMacros) customTargetInText.toFloatOrNull() else null
+                        val finalCustomM = if (isCustomMacros) {
+                            MacroNutrient(
+                                customPText.toFloatOrNull() ?: preview.targetMacros.protein,
+                                customCText.toFloatOrNull() ?: preview.targetMacros.carb,
+                                customFText.toFloatOrNull() ?: preview.targetMacros.fat
+                            )
+                        } else null
+                        val updated = stateHolder.buildProfile(user.id, name, currentAge, gender, currentHeight, currentWeight, goal, finalCustomIn, finalCustomM)
+                        stateHolder.updateProfile(updated)
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("💾 Lưu Hồ Sơ & Cập Nhật Mục Tiêu", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 3.3. PROFILE SWITCHER SCREEN
+    // -----------------------------------------------------------------------------------------
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun ProfileSwitcherScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Chuyển Đổi Người Dùng", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
+                        ) {
+                            Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Danh sách hồ sơ cá nhân:", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+
+                uiState.profiles.forEach { p ->
+                    val isActive = p.id == uiState.activeProfileId
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp)),
+                        color = if (isActive) Color(0xFF1E2F4D) else MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isActive) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f).clickable { stateHolder.switchActiveProfile(p.id) },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("👤", fontSize = 28.sp)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(p.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text("${p.age} tuổi • ${p.weightKg}kg • BMR: ${p.bmr.toInt()}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                    Text("Nạp: ${p.targetCaloriesIn.toInt()} kcal • Đốt: ${p.targetCaloriesOut.toInt()} kcal", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Button(
+                                    onClick = { stateHolder.startEditingProfile(p.id) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("✏️ Sửa", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                }
+
+                                if (isActive) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text("Đang chọn", modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = { stateHolder.navigateTo(Screen.ONBOARDING) },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("＋ Thêm Cá Nhân Mới", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 3.4. DASHBOARD SCREEN (QUẢN LÝ CÂN NẶNG, ĐẨY LỊCH TẬP LÊN TRÊN, CÂN BẰNG ĐỒNG BỘ 1 DÒNG)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -1252,6 +1922,7 @@ class MainActivity : ComponentActivity() {
         val today = LocalDate.now()
         val currentLog = uiState.currentDailyLog
         val workoutsToday = uiState.currentWorkouts
+        val currentWeight = uiState.currentDayWeight
 
         val isFutureDate = selectedDate.isAfter(today)
         val hasDailyData = currentLog.hasData()
@@ -1261,6 +1932,9 @@ class MainActivity : ComponentActivity() {
         val balanceCal = currentLog.getCalorieBalance(activeUser.bmr)
 
         val daysDifference = java.time.temporal.ChronoUnit.DAYS.between(selectedDate, today)
+
+        var showWeightDialog by remember { mutableStateOf(false) }
+        var inputWeightText by remember { mutableStateOf(currentWeight.toString()) }
 
         val openDatePicker = {
             val dpd = DatePickerDialog(
@@ -1274,6 +1948,60 @@ class MainActivity : ComponentActivity() {
                 selectedDate.dayOfMonth
             )
             dpd.show()
+        }
+
+        if (showWeightDialog) {
+            AlertDialog(
+                onDismissRequest = { showWeightDialog = false },
+                title = { Text("⚖️ Cập Nhật Cân Nặng", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Ghi nhận cân nặng cho ngày ${selectedDate.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}:", fontSize = 13.sp, color = Color.LightGray)
+                        OutlinedTextField(
+                            value = inputWeightText,
+                            onValueChange = { inputWeightText = it },
+                            label = { Text("Cân nặng (kg)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(-0.5f, -0.2f, +0.2f, +0.5f).forEach { delta ->
+                                Button(
+                                    onClick = {
+                                        val cur = inputWeightText.toFloatOrNull() ?: currentWeight
+                                        inputWeightText = String.format(java.util.Locale.US, "%.1f", (cur + delta).coerceAtLeast(30f))
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Text(if (delta > 0) "+$delta" else "$delta", fontSize = 11.sp, color = Color.White)
+                                }
+                            }
+                        }
+                        Text("• Tự động tính toán lại BMR, TDEE, Calo nạp/đốt mục tiêu tương ứng.", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val w = inputWeightText.toFloatOrNull() ?: currentWeight
+                            stateHolder.updateWeight(w, selectedDate)
+                            showWeightDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Lưu Cân Nặng", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showWeightDialog = false }) {
+                        Text("Hủy", color = Color.LightGray)
+                    }
+                }
+            )
         }
 
         Scaffold(
@@ -1296,7 +2024,7 @@ class MainActivity : ComponentActivity() {
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // TOP HEADER: PROFILE SWITCHER & DATE PICKER
+                // TOP HEADER: PROFILE AVATAR & DATE PICKER
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1360,7 +2088,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // CURRENT DATE TITLE (KHÔNG CÓ CHỮ QUÁ KHỨ / TƯƠNG LAI)
+                // CURRENT DATE & RELATIVE STATUS
                 val formatter = DateTimeFormatter.ofPattern("EEEE, 'ngày' dd/MM/yyyy", java.util.Locale("vi"))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1381,11 +2109,29 @@ class MainActivity : ComponentActivity() {
                             fontWeight = FontWeight.SemiBold
                         )
                     }
+
+                    // NÚT CẬP NHẬT CÂN NẶNG NGAY TRÊN THANH TIÊU ĐỀ
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                inputWeightText = currentWeight.toString()
+                                showWeightDialog = true
+                            },
+                        color = Color(0xFF102A24),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("⚖️", fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("${currentWeight}kg", fontWeight = FontWeight.Black, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // 7-DAY DYNAMIC HORIZONTAL CALENDAR STRIP (STREAK: 🥗 Ăn đủ, 🔥 Đốt đủ, 🥗🔥 Cả hai)
+                // 7-DAY DYNAMIC HORIZONTAL CALENDAR STRIP (STREAK: 🥗 Ăn, 🔥 Tập, 🥗🔥 Cả hai & Cân nặng)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1397,6 +2143,7 @@ class MainActivity : ComponentActivity() {
                         val isSelected = i == 0
                         val dayLog = uiState.userLogs[activeUser.id]?.get(date) ?: DailyLog(date = date)
                         val dayWorkouts = (uiState.userWorkouts[activeUser.id] ?: emptyList()).filter { it.date == date }
+                        val dayWeight = uiState.userWeightHistory[activeUser.id]?.get(date) ?: dayLog.weightKg
 
                         val hasFood = dayLog.hasFoodData()
                         val hasWorkout = dayLog.hasWorkoutData() || dayWorkouts.any { it.isCompleted }
@@ -1420,14 +2167,14 @@ class MainActivity : ComponentActivity() {
 
                         Surface(
                             modifier = Modifier
-                                .width(52.dp)
+                                .width(54.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .clickable { stateHolder.selectDate(date) },
                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
                             border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
                         ) {
                             Column(
-                                modifier = Modifier.padding(vertical = 10.dp),
+                                modifier = Modifier.padding(vertical = 8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
@@ -1439,16 +2186,25 @@ class MainActivity : ComponentActivity() {
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     "${date.dayOfMonth}",
-                                    fontSize = 15.sp,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Black,
                                     color = if (isSelected) Color.Black else Color.White
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     streakIcon,
-                                    fontSize = if (streakIcon.length > 1) 10.sp else 11.sp,
+                                    fontSize = if (streakIcon.length > 1) 9.sp else 11.sp,
                                     color = if (isSelected) Color.Black else Color(0xFF475569)
                                 )
+                                if (dayWeight != null) {
+                                    Spacer(modifier = Modifier.height(1.dp))
+                                    Text(
+                                        "${dayWeight.toInt()}k",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) Color.Black else MaterialTheme.colorScheme.secondary
+                                    )
+                                }
                             }
                         }
                     }
@@ -1560,15 +2316,15 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 val evalText = when {
                                     abs(balanceCal) <= whoTolerance ->
-                                        "🌿 Năng lượng nạp & tiêu thụ hôm nay ở trạng thái cân bằng lý tưởng theo tiêu chuẩn dung sai WHO (±10-15%). Chênh lệch nhỏ là hoàn toàn tự nhiên và rất lành mạnh!"
+                                        "🌿 Năng lượng nạp & tiêu thụ hôm nay ở trạng thái cân bằng lý tưởng theo tiêu chuẩn dung sai WHO (±10-15%)."
                                     balanceCal < -whoTolerance && balanceCal >= -650f ->
-                                        "🎯 Thâm hụt ${abs(balanceCal).toInt()} kcal nằm trong ngưỡng an toàn chuẩn (300-600 kcal) giúp đốt mỡ bền vững, bảo toàn khối cơ và không gây kiệt sức."
+                                        "🎯 Thâm hụt ${abs(balanceCal).toInt()} kcal nằm trong ngưỡng an toàn chuẩn (300-600 kcal) giúp đốt mỡ bền vững, bảo toàn khối cơ."
                                     balanceCal < -650f ->
-                                        "⚠️ Thâm hụt ${abs(balanceCal).toInt()} kcal khá sâu. WHO khuyến cáo không nên cắt giảm quá mức liên tục để tránh suy giảm trao đổi chất."
+                                        "⚠️ Thâm hụt ${abs(balanceCal).toInt()} kcal khá sâu. WHO khuyến cáo không nên cắt giảm quá mức liên tục."
                                     balanceCal <= whoTolerance * 2.5f ->
-                                        "💪 Nạp thặng dư nhẹ ${balanceCal.toInt()} kcal rất tốt cho phát triển cơ bắp, có thể bù trừ linh hoạt qua các buổi tập tiếp theo."
+                                        "💪 Nạp thặng dư nhẹ ${balanceCal.toInt()} kcal rất tốt cho phát triển cơ bắp, có thể bù trừ linh hoạt qua các buổi tập."
                                     else ->
-                                        "⚠️ Lượng nạp vượt mức tiêu thụ ${balanceCal.toInt()} kcal. Bạn có thể duy trì vận động thể thao nhẹ (chạy bộ, đá bóng 30p) để cơ thể cân đối lại."
+                                        "⚠️ Lượng nạp vượt mức tiêu thụ ${balanceCal.toInt()} kcal. Bạn có thể duy trì vận động thể thao nhẹ để cơ thể cân đối lại."
                                 }
                                 Text(
                                     evalText,
@@ -1701,68 +2457,13 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // CHI TIẾT MÓN ĂN
+                // 1. KẾ HOẠCH TẬP LUYỆN (OUT) - ĐƯỢC ĐẨY LÊN TRÊN THEO YÊU CẦU
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Chi tiết món đã ăn (${currentLog.loggedFoods.size} món):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                if (currentLog.loggedFoods.isEmpty()) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            "Chưa có món ăn nào trong ngày này. Bấm 'Thêm Món' để ghi nhật ký!",
-                            modifier = Modifier.padding(14.dp),
-                            color = Color(0xFF94A3B8),
-                            fontSize = 12.sp
-                        )
-                    }
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        currentLog.loggedFoods.forEach { food ->
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("🍲", fontSize = 20.sp)
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text(food.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                            Text("${food.portion} • P:${food.macro.protein.toInt()}g C:${food.macro.carb.toInt()}g F:${food.macro.fat.toInt()}g", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                                        }
-                                    }
-                                    Text("+${food.macro.calories.toInt()} kcal", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // CHI TIẾT BÀI TẬP
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Lịch tập luyện (${workoutsToday.count { it.isCompleted }}/${workoutsToday.size} hoàn thành):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("🏋️ Kế hoạch tập luyện (OUT: ${workoutsToday.count { it.isCompleted }}/${workoutsToday.size}):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
@@ -1774,7 +2475,7 @@ class MainActivity : ComponentActivity() {
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
-                            "Không có bài tập nào vào ngày này.",
+                            "Không có bài tập nào vào ngày này. Bấm '＋ Tập Luyện' để lên lịch!",
                             modifier = Modifier.padding(14.dp),
                             color = Color(0xFF94A3B8),
                             fontSize = 12.sp
@@ -1805,8 +2506,79 @@ class MainActivity : ComponentActivity() {
                                         Text(workout.title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (workout.isCompleted) Color.Gray else Color.White)
                                         Text("${workout.detail} • (~$burned kcal)", fontSize = 11.sp, color = Color(0xFF94A3B8))
                                     }
-                                    AnimatedVisibility(visible = workout.isCompleted, enter = fadeIn() + scaleIn()) {
-                                        Text("🔥 +$burned kcal", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black, fontSize = 12.sp)
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        AnimatedVisibility(visible = workout.isCompleted, enter = fadeIn() + scaleIn()) {
+                                            Text("🔥 +$burned kcal", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black, fontSize = 12.sp)
+                                        }
+                                        IconButton(
+                                            onClick = { stateHolder.deleteWorkoutItem(workout.id) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Text("🗑️", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // 2. CHI TIẾT MÓN ĂN ĐÃ NẠP (IN)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🍲 Món ăn đã nạp (IN: ${currentLog.loggedFoods.size} món - ${currentLog.totalCaloriesIn.toInt()} kcal):", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                if (currentLog.loggedFoods.isEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            "Chưa có món ăn nào trong ngày này. Bấm '＋ Thêm Món' để ghi nhật ký!",
+                            modifier = Modifier.padding(14.dp),
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        currentLog.loggedFoods.forEach { food ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("🍲", fontSize = 20.sp)
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(food.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                            Text("${food.portion} • P:${food.macro.protein.toInt()}g C:${food.macro.carb.toInt()}g F:${food.macro.fat.toInt()}g", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                        }
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("+${food.macro.calories.toInt()} kcal", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+                                        IconButton(
+                                            onClick = { stateHolder.deleteFoodItem(food.id) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Text("🗑️", fontSize = 12.sp)
+                                        }
                                     }
                                 }
                             }
@@ -1820,90 +2592,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.3. PROFILE SWITCHER SCREEN
-    // -----------------------------------------------------------------------------------------
-
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    fun ProfileSwitcherScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Chuyển Đổi Người Dùng", fontWeight = FontWeight.Bold) },
-                    navigationIcon = {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
-                        ) {
-                            Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-                )
-            },
-            containerColor = MaterialTheme.colorScheme.background
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(16.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text("Danh sách hồ sơ cá nhân:", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
-
-                uiState.profiles.forEach { p ->
-                    val isActive = p.id == uiState.activeProfileId
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable { stateHolder.switchActiveProfile(p.id) },
-                        color = if (isActive) Color(0xFF1E2F4D) else MaterialTheme.colorScheme.surface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isActive) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("👤", fontSize = 28.sp)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    Text("${p.age} tuổi • ${p.weightKg}kg • BMR: ${p.bmr.toInt()} kcal", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                                    Text("Mục tiêu: ${p.targetCaloriesIn.toInt()} kcal/ngày", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                            if (isActive) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Text("Đang chọn ✓", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Button(
-                    onClick = { stateHolder.navigateTo(Screen.ONBOARDING) },
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("＋ Thêm Cá Nhân Mới", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
-                }
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------------------------
-    // 3.4. ADD FOOD SCREEN (TAB IN)
+    // 3.5. ADD FOOD SCREEN (TAB IN)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -2051,103 +2740,81 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        selectedTab = index
-                                        stateHolder.selectFoodPreset(null)
-                                        stateHolder.selectRawIngredient(null)
-                                        searchQuery = ""
-                                    },
+                                    .clickable { selectedTab = index },
                                 color = if (isTabSel) MaterialTheme.colorScheme.primary else Color.Transparent
                             ) {
-                                Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                                    Text(
-                                        title,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isTabSel) Color.Black else Color(0xFF94A3B8)
-                                    )
-                                }
+                                Text(
+                                    title,
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    textAlign = TextAlign.Center,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isTabSel) Color.Black else Color(0xFF94A3B8)
+                                )
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                // SEARCH BAR
-                if (selectedTab == 0 || selectedTab == 1) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = {
-                            Text(
-                                if (selectedTab == 0) "🔍 Tìm thịt bò, heo, gà, trứng, đậu, rau..." else "🔍 Tìm phở, cơm tấm, bún riêu, bánh mì...",
-                                fontSize = 12.sp,
-                                color = Color(0xFF64748B)
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        singleLine = true,
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                Text(
-                                    "✕",
-                                    modifier = Modifier.clickable { searchQuery = "" }.padding(8.dp),
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.Gray
-                                )
-                            }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
+                // TAB CONTENT
                 Box(modifier = Modifier.weight(1f)) {
                     when (selectedTab) {
-                        0 -> { // NGUYÊN LIỆU DÂN DÃ - ĐÃ ĐẨY TỰ NHẬP MÓN KHÁC LÊN ĐẦU
-                            val filteredRaw = remember(searchQuery) {
-                                if (searchQuery.isBlank()) stateHolder.rawFoodCatalog
-                                else stateHolder.rawFoodCatalog.filter {
-                                    it.name.contains(searchQuery, ignoreCase = true) || it.category.contains(searchQuery, ignoreCase = true)
-                                }
+                        0 -> {
+                            // DÂN DÃ & TỰ NHẬP (TỰ NHẬP ĐƯA LÊN ĐẦU DANH SÁCH)
+                            val filteredRaw = stateHolder.rawFoodCatalog.filter {
+                                it.name.contains(searchQuery, ignoreCase = true) || it.category.contains(searchQuery, ignoreCase = true)
                             }
 
-                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // 1. TỰ CHỌN / CUSTOM MACROS LÊN ĐẦU DANH SÁCH
                                 item {
                                     Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .clickable { showCustomManual = !showCustomManual },
-                                        color = MaterialTheme.colorScheme.surface,
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (showCustomManual) MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = if (showCustomManual) Color(0xFF1E2F4D) else MaterialTheme.colorScheme.surface,
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (showCustomManual) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
                                             Row(
-                                                modifier = Modifier.fillMaxWidth(),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { showCustomManual = !showCustomManual },
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Text("✍️", fontSize = 16.sp)
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text("Tự nhập món khác (Custom Macros)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
+                                                    Text("✍️", fontSize = 18.sp)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column {
+                                                        Text("Tự nhập món khác (Custom Macros)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                                        Text("Nhập nhanh Protein, Carb, Fat theo ý bạn", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                                    }
                                                 }
-                                                Text(if (showCustomManual) "Thu gọn ▲" else "Nhập ngay ▼", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                                                Text(if (showCustomManual) "Đóng ▲" else "Nhập ▼", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                                             }
 
                                             if (showCustomManual) {
                                                 Spacer(modifier = Modifier.height(10.dp))
                                                 OutlinedTextField(
                                                     value = customName,
-                                                    onValueChange = { customName = it },
-                                                    label = { Text("Tên món ăn") },
-                                                    shape = RoundedCornerShape(12.dp),
+                                                    onValueChange = {
+                                                        customName = it
+                                                        val p = customProtein.toFloatOrNull() ?: 0f
+                                                        val c = customCarb.toFloatOrNull() ?: 0f
+                                                        val f = customFat.toFloatOrNull() ?: 0f
+                                                        stateHolder.setCustomPreviewMacro(it.ifBlank { "Món tự nhập" }, MacroNutrient(p, c, f))
+                                                    },
+                                                    label = { Text("Tên món (vd: Sinh tố chuối bơ)") },
+                                                    shape = RoundedCornerShape(10.dp),
                                                     modifier = Modifier.fillMaxWidth()
                                                 )
                                                 Spacer(modifier = Modifier.height(6.dp))
-                                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                     OutlinedTextField(
                                                         value = customProtein,
                                                         onValueChange = {
@@ -2155,9 +2822,9 @@ class MainActivity : ComponentActivity() {
                                                             val p = it.toFloatOrNull() ?: 0f
                                                             val c = customCarb.toFloatOrNull() ?: 0f
                                                             val f = customFat.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                            stateHolder.setCustomPreviewMacro(customName.ifBlank { "Món tự nhập" }, MacroNutrient(p, c, f))
                                                         },
-                                                        label = { Text("P (g)") },
+                                                        label = { Text("Protein (g)") },
                                                         shape = RoundedCornerShape(10.dp),
                                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                                         modifier = Modifier.weight(1f)
@@ -2169,9 +2836,9 @@ class MainActivity : ComponentActivity() {
                                                             val p = customProtein.toFloatOrNull() ?: 0f
                                                             val c = it.toFloatOrNull() ?: 0f
                                                             val f = customFat.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                            stateHolder.setCustomPreviewMacro(customName.ifBlank { "Món tự nhập" }, MacroNutrient(p, c, f))
                                                         },
-                                                        label = { Text("C (g)") },
+                                                        label = { Text("Carb (g)") },
                                                         shape = RoundedCornerShape(10.dp),
                                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                                         modifier = Modifier.weight(1f)
@@ -2183,9 +2850,9 @@ class MainActivity : ComponentActivity() {
                                                             val p = customProtein.toFloatOrNull() ?: 0f
                                                             val c = customCarb.toFloatOrNull() ?: 0f
                                                             val f = it.toFloatOrNull() ?: 0f
-                                                            stateHolder.setCustomPreviewMacro(customName, MacroNutrient(p, c, f))
+                                                            stateHolder.setCustomPreviewMacro(customName.ifBlank { "Món tự nhập" }, MacroNutrient(p, c, f))
                                                         },
-                                                        label = { Text("F (g)") },
+                                                        label = { Text("Fat (g)") },
                                                         shape = RoundedCornerShape(10.dp),
                                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                                         modifier = Modifier.weight(1f)
@@ -2194,29 +2861,32 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                    Spacer(modifier = Modifier.height(2.dp))
                                 }
 
+                                // 2. TÌM KIẾM NGUYÊN LIỆU CƠ BẢN
+                                item {
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        placeholder = { Text("🔍 Tìm món dân dã (vd: thịt nạc, ức gà, trứng, bắp bò...)", fontSize = 12.sp, color = Color(0xFF64748B)) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                                    )
+                                }
+
+                                // 3. DANH SÁCH MÓN DÂN DÃ
                                 items(filteredRaw) { item ->
                                     val isSelected = uiState.selectedRawIngredient?.id == item.id
-                                    val currentAmount = if (isSelected) uiState.rawAmount else item.defaultAmount
-                                    val macro = item.calculateMacro(currentAmount)
-
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(14.dp))
                                             .clickable {
-                                                if (isSelected) {
-                                                    stateHolder.selectRawIngredient(null)
-                                                } else {
-                                                    val initAmt = item.defaultAmount
-                                                    inputGramText = initAmt.toInt().toString()
-                                                    stateHolder.selectRawIngredient(item, initAmt)
-                                                }
+                                                inputGramText = item.defaultAmount.toInt().toString()
+                                                stateHolder.selectRawIngredient(if (isSelected) null else item, item.defaultAmount)
                                             },
-                                        color = if (isSelected) Color(0xFF16253D) else MaterialTheme.colorScheme.surface,
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
+                                        color = if (isSelected) Color(0xFF1E283D) else MaterialTheme.colorScheme.surface,
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF26334D))
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
                                             Row(
@@ -2228,216 +2898,147 @@ class MainActivity : ComponentActivity() {
                                                     Text(item.icon, fontSize = 22.sp)
                                                     Spacer(modifier = Modifier.width(10.dp))
                                                     Column {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Text(item.name, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Surface(
-                                                                color = Color(0xFF1E283D),
-                                                                shape = RoundedCornerShape(4.dp)
-                                                            ) {
-                                                                Text(
-                                                                    item.category,
-                                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                                                    fontSize = 9.sp,
-                                                                    color = Color(0xFF94A3B8)
-                                                                )
-                                                            }
-                                                        }
-                                                        Text(
-                                                            if (item.unitType == UnitType.GRAM) "Chuẩn: ${item.baseMacro.calories.toInt()} kcal / 100g" else "Chuẩn: ${item.baseMacro.calories.toInt()} kcal / 1 ${item.unitName}",
-                                                            fontSize = 11.sp,
-                                                            color = Color(0xFF94A3B8)
-                                                        )
+                                                        Text(item.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                                        val unitLabel = if (item.unitType == UnitType.GRAM) "100g" else "1 ${item.unitName}"
+                                                        Text("Mỗi $unitLabel: P:${item.baseMacro.protein}g C:${item.baseMacro.carb}g F:${item.baseMacro.fat}g", fontSize = 11.sp, color = Color(0xFF94A3B8))
                                                     }
                                                 }
-
                                                 Text(
-                                                    "${macro.calories.toInt()} kcal",
+                                                    "~${item.baseMacro.calories.toInt()} kcal",
                                                     fontWeight = FontWeight.Black,
-                                                    fontSize = 14.sp,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+
+                                            // BỘ ĐIỀU CHỈNH ĐỊNH LƯỢNG KHI CHỌN
+                                            if (isSelected) {
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Text(
+                                                        if (item.unitType == UnitType.GRAM) "Khẩu phần ăn (gram):" else "Số lượng (${item.unitName}):",
+                                                        fontSize = 11.sp,
+                                                        color = MaterialTheme.colorScheme.primary,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        IconButton(
+                                                            onClick = {
+                                                                val cur = inputGramText.toFloatOrNull() ?: item.defaultAmount
+                                                                val next = if (item.unitType == UnitType.GRAM) (cur - 50f).coerceAtLeast(10f) else (cur - 1f).coerceAtLeast(1f)
+                                                                inputGramText = next.toInt().toString()
+                                                                stateHolder.updateRawAmount(next)
+                                                            }
+                                                        ) { Text("➖", fontSize = 12.sp) }
+
+                                                        OutlinedTextField(
+                                                            value = inputGramText,
+                                                            onValueChange = {
+                                                                inputGramText = it
+                                                                it.toFloatOrNull()?.let { amt -> stateHolder.updateRawAmount(amt) }
+                                                            },
+                                                            modifier = Modifier.width(70.dp).height(46.dp),
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        )
+
+                                                        IconButton(
+                                                            onClick = {
+                                                                val cur = inputGramText.toFloatOrNull() ?: item.defaultAmount
+                                                                val next = if (item.unitType == UnitType.GRAM) cur + 50f else cur + 1f
+                                                                inputGramText = next.toInt().toString()
+                                                                stateHolder.updateRawAmount(next)
+                                                            }
+                                                        ) { Text("➕", fontSize = 12.sp) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        1 -> {
+                            // MÓN VIỆT NAM (18+)
+                            val filteredPresets = stateHolder.foodCatalog.filter {
+                                it.name.contains(searchQuery, ignoreCase = true) || it.category.contains(searchQuery, ignoreCase = true)
+                            }
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                item {
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        placeholder = { Text("🔍 Tìm món Việt (vd: phở bò, cơm tấm, bún chả...)", fontSize = 12.sp, color = Color(0xFF64748B)) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                                    )
+                                }
+
+                                items(filteredPresets) { preset ->
+                                    val isSelected = uiState.selectedFoodPreset?.id == preset.id
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .clickable {
+                                                stateHolder.selectFoodPreset(if (isSelected) null else preset)
+                                            },
+                                        color = if (isSelected) Color(0xFF1E283D) else MaterialTheme.colorScheme.surface,
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF26334D))
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(preset.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                                    Text("${preset.defaultPortion} • P:${preset.baseMacro.protein.toInt()}g C:${preset.baseMacro.carb.toInt()}g F:${preset.baseMacro.fat.toInt()}g", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                                }
+                                                Text(
+                                                    "${preset.baseMacro.calories.toInt()} kcal",
+                                                    fontWeight = FontWeight.Black,
+                                                    fontSize = 13.sp,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
                                             }
 
                                             if (isSelected) {
                                                 Spacer(modifier = Modifier.height(10.dp))
-                                                Divider(color = Color(0xFF26334D))
-                                                Spacer(modifier = Modifier.height(8.dp))
-
-                                                if (item.unitType == UnitType.GRAM) {
-                                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                                            verticalAlignment = Alignment.CenterVertically
-                                                        ) {
-                                                            Text("Nhập khối lượng (gam):", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-
-                                                            OutlinedTextField(
-                                                                value = inputGramText,
-                                                                onValueChange = {
-                                                                    inputGramText = it
-                                                                    val num = it.toFloatOrNull() ?: 0f
-                                                                    stateHolder.updateRawAmount(num)
-                                                                },
-                                                                label = { Text("Số gam (g)") },
-                                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                                shape = RoundedCornerShape(10.dp),
-                                                                modifier = Modifier.width(130.dp)
-                                                            )
-                                                        }
-
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                                        ) {
-                                                            listOf(50f, 80f, 100f, 150f, 200f, 250f, 300f).forEach { g ->
-                                                                Surface(
-                                                                    modifier = Modifier
-                                                                        .clip(RoundedCornerShape(8.dp))
-                                                                        .clickable {
-                                                                            inputGramText = g.toInt().toString()
-                                                                            stateHolder.updateRawAmount(g)
-                                                                        },
-                                                                    color = if (currentAmount == g) MaterialTheme.colorScheme.primary else Color(0xFF0F172A),
-                                                                    border = if (currentAmount == g) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                                                                ) {
-                                                                    Text(
-                                                                        "${g.toInt()}g",
-                                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                                        fontSize = 11.sp,
-                                                                        fontWeight = FontWeight.Bold,
-                                                                        color = if (currentAmount == g) Color.Black else Color(0xFF94A3B8)
-                                                                    )
-                                                                }
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text("Khẩu phần ăn:", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        listOf(0.5f to "0.5 bát", 1.0f to "1 phần", 1.5f to "1.5 phần").forEach { (mult, label) ->
+                                                            Button(
+                                                                onClick = { stateHolder.updatePortionMultiplier(mult) },
+                                                                shape = RoundedCornerShape(8.dp),
+                                                                colors = ButtonDefaults.buttonColors(
+                                                                    containerColor = if (uiState.previewPortionMultiplier == mult) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                                                                ),
+                                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                            ) {
+                                                                Text(
+                                                                    label,
+                                                                    fontSize = 11.sp,
+                                                                    color = if (uiState.previewPortionMultiplier == mult) Color.Black else Color.White
+                                                                )
                                                             }
                                                         }
                                                     }
-                                                } else {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Text("Số lượng (${item.unitName}):", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-
-                                                        Row(
-                                                            verticalAlignment = Alignment.CenterVertically,
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                        ) {
-                                                            Button(
-                                                                onClick = {
-                                                                    val next = (currentAmount - 1f).coerceAtLeast(1f)
-                                                                    inputGramText = next.toInt().toString()
-                                                                    stateHolder.updateRawAmount(next)
-                                                                },
-                                                                contentPadding = PaddingValues(0.dp),
-                                                                modifier = Modifier.size(32.dp),
-                                                                shape = RoundedCornerShape(8.dp),
-                                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
-                                                            ) { Text("-", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White) }
-
-                                                            Text("${currentAmount.toInt()} ${item.unitName}", fontSize = 13.sp, fontWeight = FontWeight.Black, color = Color.White)
-
-                                                            Button(
-                                                                onClick = {
-                                                                    val next = currentAmount + 1f
-                                                                    inputGramText = next.toInt().toString()
-                                                                    stateHolder.updateRawAmount(next)
-                                                                },
-                                                                contentPadding = PaddingValues(0.dp),
-                                                                modifier = Modifier.size(32.dp),
-                                                                shape = RoundedCornerShape(8.dp),
-                                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
-                                                            ) { Text("+", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White) }
-                                                        }
-                                                    }
-                                                }
-
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Text(
-                                                    "Macros: P: ${macro.protein.toInt()}g | C: ${macro.carb.toInt()}g | F: ${macro.fat.toInt()}g",
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.secondary,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        1 -> { // 18+ MÓN VIỆT NAM
-                            val filteredPresets = remember(searchQuery) {
-                                if (searchQuery.isBlank()) stateHolder.foodCatalog
-                                else stateHolder.foodCatalog.filter {
-                                    it.name.contains(searchQuery, ignoreCase = true) || it.category.contains(searchQuery, ignoreCase = true)
-                                }
-                            }
-
-                            Column {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Khẩu phần:", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                                    listOf(0.5f to "0.5 phần", 1.0f to "1.0 phần", 1.5f to "1.5 phần", 2.0f to "2.0 phần").forEach { (multiplier, label) ->
-                                        Surface(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .clickable { stateHolder.updatePortionMultiplier(multiplier) },
-                                            color = if (uiState.previewPortionMultiplier == multiplier) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                                            border = if (uiState.previewPortionMultiplier == multiplier) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                                        ) {
-                                            Text(
-                                                label,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (uiState.previewPortionMultiplier == multiplier) Color.Black else Color(0xFF94A3B8)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(filteredPresets) { food ->
-                                        val isSelected = uiState.selectedFoodPreset?.id == food.id
-                                        val macro = food.baseMacro * uiState.previewPortionMultiplier
-
-                                        Surface(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .clickable { stateHolder.selectFoodPreset(if (isSelected) null else food) },
-                                            color = if (isSelected) Color(0xFF16253D) else MaterialTheme.colorScheme.surface,
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Text(food.name, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Surface(color = Color(0xFF1E283D), shape = RoundedCornerShape(4.dp)) {
-                                                            Text(food.category, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp), fontSize = 9.sp, color = MaterialTheme.colorScheme.primary)
-                                                        }
-                                                    }
-                                                    Text("${food.defaultPortion} • ${macro.calories.toInt()} kcal", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                                                    Text(
-                                                        "P: ${macro.protein.toInt()}g | C: ${macro.carb.toInt()}g | F: ${macro.fat.toInt()}g",
-                                                        fontSize = 11.sp,
-                                                        color = MaterialTheme.colorScheme.secondary
-                                                    )
-                                                }
-                                                if (isSelected) {
-                                                    Surface(color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp)) {
-                                                        Text("Đang xem 👁️", modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
-                                                    }
                                                 }
                                             }
                                         }
@@ -2445,55 +3046,27 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        2 -> { // SCAN ẢNH OCR
+                        2 -> {
+                            // SCAN BAO BÌ OCR
                             Column(
-                                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
                             ) {
-                                Box(
+                                Surface(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(130.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(MaterialTheme.colorScheme.surface)
-                                        .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                                        .size(110.dp)
+                                        .clip(CircleShape)
                                         .clickable { imagePickerLauncher.launch("image/*") },
-                                    contentAlignment = Alignment.Center
+                                    color = MaterialTheme.colorScheme.surfaceVariant
                                 ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        if (uiState.isScanningImage) {
-                                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text("AI đang đọc bảng dinh dưỡng...", fontSize = 12.sp, color = Color.LightGray)
-                                        } else {
-                                            Text("📷", fontSize = 32.sp)
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text("Bấm để Chọn Ảnh Bao Bì", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                            Text("Tự động bóc tách Calo, P, C, F", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                                        }
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("📸", fontSize = 42.sp)
                                     }
                                 }
-
                                 Spacer(modifier = Modifier.height(12.dp))
-
-                                if (uiState.previewMacro != null && uiState.selectedFoodPreset == null && uiState.selectedRawIngredient == null) {
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = Color(0xFF0F291E),
-                                        shape = RoundedCornerShape(14.dp),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
-                                    ) {
-                                        Column(modifier = Modifier.padding(14.dp)) {
-                                            Text("✓ Đã nhận diện thành công từ ảnh:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                                            Text(uiState.previewFoodName, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color.White)
-                                            Text(
-                                                "Calo: ${uiState.previewMacro?.calories?.toInt()} kcal | P: ${uiState.previewMacro?.protein?.toInt()}g | C: ${uiState.previewMacro?.carb?.toInt()}g | F: ${uiState.previewMacro?.fat?.toInt()}g",
-                                                fontSize = 11.sp,
-                                                color = Color.LightGray
-                                            )
-                                        }
-                                    }
-                                }
+                                Text("Chụp hoặc Tải ảnh Bảng Dinh Dưỡng", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                                Text("AI tự động trích xuất Calo, Protein, Carb, Fat", fontSize = 11.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -2501,188 +3074,95 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // HAI Ô NẰM NGANG CẠNH NHAU
+                // FOOTER: 2 NÚT HÀNH ĐỘNG [ XÁC NHẬN ĂN ] VÀ [ SET LỊCH 📅 ]
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Button(
                         onClick = {
-                            uiState.previewMacro?.let {
-                                stateHolder.commitFoodLog(uiState.previewFoodName, it)
-                            }
+                            val macro = uiState.previewMacro ?: MacroNutrient(20f, 30f, 5f)
+                            stateHolder.commitFoodLog(uiState.previewFoodName.ifBlank { "Khẩu phần ăn" }, macro)
                         },
-                        enabled = uiState.previewMacro != null,
-                        modifier = Modifier.weight(1.2f).height(50.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            disabledContainerColor = Color(0xFF1E283D)
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.weight(1.3f).height(50.dp)
                     ) {
-                        Text(
-                            "Xác Nhận Ăn",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Black,
-                            color = if (uiState.previewMacro != null) Color.Black else Color(0xFF64748B)
-                        )
+                        Text("Xác Nhận Ăn", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
                     }
 
                     Button(
-                        onClick = {
-                            if (uiState.previewMacro != null) {
-                                stateHolder.navigateTo(Screen.SET_SCHEDULE_FOOD)
-                            }
-                        },
-                        enabled = uiState.previewMacro != null,
-                        modifier = Modifier.weight(1f).height(50.dp),
+                        onClick = { stateHolder.navigateTo(Screen.SET_SCHEDULE_FOOD) },
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.tertiary,
-                            disabledContainerColor = Color(0xFF1E283D)
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.weight(1f).height(50.dp)
                     ) {
-                        Text(
-                            "SET LỊCH 📅",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Black,
-                            color = if (uiState.previewMacro != null) Color.Black else Color(0xFF64748B)
-                        )
+                        Text("SET LỊCH 📅", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.secondary)
                     }
                 }
-            }
-        }
-    }
-
-    @Composable
-    fun GhostBarProgressItem(label: String, current: Float, preview: Float, target: Float, unit: String, baseColor: Color) {
-        val totalProjected = current + preview
-        val isOverTarget = totalProjected > target
-        val surplus = totalProjected - target
-
-        val currentRatio = (current / target).coerceIn(0f, 1f)
-        val ghostRatio = (totalProjected / target).coerceIn(0f, 1f)
-
-        val animatedCurrent by animateFloatAsState(targetValue = currentRatio, animationSpec = tween(350), label = "c")
-        val animatedGhost by animateFloatAsState(targetValue = ghostRatio, animationSpec = tween(350), label = "g")
-
-        val ghostColor = if (isOverTarget) Color(0xFFEF4444) else baseColor.copy(alpha = 0.5f)
-
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isOverTarget) {
-                        Text("${target.toInt()} / ${target.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = baseColor)
-                        Text(" + ${surplus.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, color = Color(0xFFEF4444))
-                        Text(" $unit", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                    } else {
-                        Text("${current.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = baseColor)
-                        if (preview > 0f) {
-                            Text(" + ${preview.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
-                        }
-                        Text(" / ${target.toInt()} $unit", fontSize = 11.sp, color = Color(0xFF64748B))
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF0C121E))
-            ) {
-                Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(animatedGhost).background(ghostColor))
-                Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(animatedCurrent).background(baseColor))
             }
         }
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.5. CREATE WORKOUT SCREEN (VỚI 2 NÚT PHÂN LOẠI CHUẨN [🏋️ Gym / Tạ] VÀ [⚽ Thể thao / Chạy] NHƯ HÌNH)
+    // 3.6. CREATE WORKOUT SCREEN (TAB OUT - GỢI Ý LÊN ĐẦU, 2 NÚT PHÂN LOẠI TO)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun CreateWorkoutScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
+        val activeUser = uiState.activeUser
+        val currentLog = uiState.currentDailyLog
+
         var workoutCategory by remember { mutableStateOf(WorkoutCategory.GYM) }
         var exerciseName by remember { mutableStateOf("Đẩy ngực ngang (Bench Press)") }
 
+        // Gym inputs
         var setsText by remember { mutableStateOf("4") }
         var repsText by remember { mutableStateOf("10") }
         var weightText by remember { mutableStateOf("60") }
 
-        var paceText by remember { mutableStateOf("5:30") }
+        // Cardio inputs
         var durationText by remember { mutableStateOf("30") }
+        var paceText by remember { mutableStateOf("5:30") }
+
         var currentMet by remember { mutableStateOf(5.5f) }
         var manualCalorieText by remember { mutableStateOf("") }
-
         var workoutSearchQuery by remember { mutableStateOf("") }
 
-        val activeUser = uiState.activeUser
-        val currentLog = uiState.currentDailyLog
+        val missingCalories = (activeUser.targetCaloriesIn - currentLog.totalCaloriesIn).coerceAtLeast(0f)
 
-        // Tính lượng Calo còn thiếu hôm nay
-        val neededCalorie = (activeUser.targetCaloriesOut - currentLog.activeCaloriesOut).coerceAtLeast(0f)
-
-        // Danh sách bài tập lọc theo Phân loại và Tìm kiếm
-        val filteredPresets = remember(workoutCategory, workoutSearchQuery, stateHolder.workoutCatalog) {
-            val byCat = stateHolder.workoutCatalog.filter { it.category == workoutCategory }
-            if (workoutSearchQuery.isBlank()) byCat
-            else byCat.filter { it.name.contains(workoutSearchQuery, ignoreCase = true) || it.tag.contains(workoutSearchQuery, ignoreCase = true) }
-        }
-
-        // Danh sách gợi ý bài tập thông minh theo Calo thiếu
-        val smartSuggestions = remember(neededCalorie, activeUser.weightKg) {
-            if (neededCalorie <= 0f) {
-                listOf(
-                    Triple("Hít đất / Chống đẩy (Push-up)", WorkoutCategory.GYM, 100f),
-                    Triple("Đi bộ nhanh (Brisk Walking)", WorkoutCategory.CARDIO, 4.5f * activeUser.weightKg * 0.5f)
-                )
-            } else if (neededCalorie <= 250f) {
-                listOf(
-                    Triple("Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, 9.8f * activeUser.weightKg * (25f / 60f)),
-                    Triple("Nhảy dây đốt mỡ (Jump Rope)", WorkoutCategory.CARDIO, 10.0f * activeUser.weightKg * (15f / 60f))
-                )
-            } else if (neededCalorie <= 500f) {
-                listOf(
-                    Triple("Bóng đá sân cỏ 7 người", WorkoutCategory.CARDIO, 8.5f * activeUser.weightKg * (45f / 60f)),
-                    Triple("Cầu lông đối kháng đôi", WorkoutCategory.CARDIO, 6.5f * activeUser.weightKg * (50f / 60f)),
-                    Triple("Gánh đùi sau (Squat Barbell)", WorkoutCategory.GYM, 6.0f * activeUser.weightKg * (35f / 60f))
-                )
+        val durationMinutes = durationText.toFloatOrNull() ?: 30f
+        val calculatedBurnCalories = remember(workoutCategory, currentMet, activeUser.weightKg, durationMinutes, setsText, repsText, weightText, manualCalorieText) {
+            val manual = manualCalorieText.toFloatOrNull()
+            if (manual != null && manual > 0f) {
+                manual
             } else {
-                listOf(
-                    Triple("Chạy bộ ngoài trời (Running)", WorkoutCategory.CARDIO, 9.8f * activeUser.weightKg * (40f / 60f)),
-                    Triple("Bơi sải tốc độ cao", WorkoutCategory.CARDIO, 8.5f * activeUser.weightKg * (45f / 60f)),
-                    Triple("Kéo lưng đùi (Deadlift)", WorkoutCategory.GYM, 6.5f * activeUser.weightKg * (35f / 60f))
-                )
-            }
-        }
-
-        // Tự động tính số Calo đốt dự kiến
-        val calculatedBurnCalories = remember(
-            workoutCategory, setsText, durationText, manualCalorieText, currentMet, activeUser.weightKg
-        ) {
-            val manCal = manualCalorieText.toFloatOrNull()
-            if (manCal != null && manCal > 0f) {
-                manCal
-            } else {
-                val dur = if (workoutCategory == WorkoutCategory.GYM) {
-                    (setsText.toFloatOrNull() ?: 4f) * 6f
+                if (workoutCategory == WorkoutCategory.GYM) {
+                    val s = setsText.toIntOrNull() ?: 4
+                    val r = repsText.toIntOrNull() ?: 10
+                    val totalReps = s * r
+                    val estMin = totalReps * 0.45f
+                    currentMet * activeUser.weightKg * (estMin / 60f)
                 } else {
-                    durationText.toFloatOrNull() ?: 30f
+                    currentMet * activeUser.weightKg * (durationMinutes / 60f)
                 }
-                currentMet * activeUser.weightKg * (dur / 60f)
             }
+        }
+
+        // 3 GỢI Ý THÔNG MINH DỰA TRÊN CALO CÒN THIẾU
+        val smartSuggestions = remember(missingCalories) {
+            listOf(
+                Triple("🏃 Chạy bộ 30p đốt mỡ", 9.8f, 30f) to WorkoutCategory.CARDIO,
+                Triple("🏋️ Tập ngực & tay sau (4 bài)", 5.5f, 40f) to WorkoutCategory.GYM,
+                Triple("⚽ Đá bóng / Cầu lông 45p", 7.5f, 45f) to WorkoutCategory.CARDIO
+            )
         }
 
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Tập Luyện", fontWeight = FontWeight.Bold) },
+                    title = { Text("Tập Luyện & Vận Động", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
                         Box(
                             modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
@@ -2702,51 +3182,43 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // 1. GỢI Ý BÀI TẬP THÔNG MINH DỰA TRÊN CALO THIẾU Ở ĐẦU TRANG
+                // 1. GỢI Ý THÔNG MINH ĐƯỢC ĐẶT LÊN ĐẦU TAB OUT THEO YÊU CẦU
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF0F1D33),
+                    color = MaterialTheme.colorScheme.surface,
                     shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f))
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("💡", fontSize = 17.sp)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Gợi ý theo Calo thiếu hôm nay", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
-                            }
-                            Text(
-                                if (neededCalorie > 0f) "Thiếu: ${neededCalorie.toInt()} kcal" else "Đã đạt mục tiêu ✓",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Black,
-                                color = if (neededCalorie > 0f) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("💡", fontSize = 16.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Gợi ý bài tập theo Calo hôm nay:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
                         }
+                        Text("Bấm vào để tự động điền toàn bộ thông số bài tập lên form", fontSize = 11.sp, color = Color(0xFF94A3B8))
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        smartSuggestions.forEach { (name, cat, estCal) ->
+                        smartSuggestions.forEach { (item, cat) ->
+                            val (name, met, dur) = item
+                            val estCal = met * activeUser.weightKg * (dur / 60f)
+
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 3.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
-                                        workoutCategory = cat
                                         exerciseName = name
-                                        val found = stateHolder.workoutCatalog.find { it.name == name }
-                                        if (found != null) {
-                                            setsText = found.defaultSets.toString()
-                                            repsText = found.defaultReps.toString()
-                                            weightText = found.defaultWeightKg.toInt().toString()
-                                            paceText = found.defaultPace
-                                            durationText = found.defaultDurationMin.toInt().toString()
-                                            currentMet = found.met
+                                        workoutCategory = cat
+                                        currentMet = met
+                                        if (cat == WorkoutCategory.CARDIO) {
+                                            durationText = dur.toInt().toString()
+                                            paceText = "5:30"
+                                        } else {
+                                            setsText = "4"
+                                            repsText = "10"
+                                            weightText = "60"
                                         }
                                         manualCalorieText = estCal.toInt().toString()
                                     },
@@ -2779,7 +3251,7 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // 2. PHÂN LOẠI: 2 NÚT TO ĐẸP [ 🏋️ Gym / Tạ ] VÀ [ ⚽ Thể thao / Chạy ] CHUẨN NHƯ HÌNH
+                // 2. PHÂN LOẠI: 2 NÚT TO ĐẸP [ 🏋️ Gym / Tạ ] VÀ [ ⚽ Thể thao / Chạy ]
                 Text("Phân loại:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.LightGray)
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -2848,80 +3320,72 @@ class MainActivity : ComponentActivity() {
                     value = workoutSearchQuery,
                     onValueChange = { workoutSearchQuery = it },
                     placeholder = { Text("🔍 Tìm bài tập (vd: đá bóng, ngực, bơi, squat...)", fontSize = 12.sp, color = Color(0xFF64748B)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    singleLine = true,
-                    trailingIcon = {
-                        if (workoutSearchQuery.isNotEmpty()) {
-                            Text("✕", modifier = Modifier.clickable { workoutSearchQuery = "" }.padding(8.dp), color = Color.Gray, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                Text("Gợi ý bài tập (${filteredPresets.size}):", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF94A3B8))
-                Spacer(modifier = Modifier.height(6.dp))
+                val filteredPresets = stateHolder.workoutCatalog.filter {
+                    it.category == workoutCategory &&
+                            (it.name.contains(workoutSearchQuery, ignoreCase = true) || it.tag.contains(workoutSearchQuery, ignoreCase = true))
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     filteredPresets.forEach { preset ->
-                        val isSelected = exerciseName == preset.name
+                        val isPresetSelected = exerciseName.equals(preset.name, ignoreCase = true)
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
                                 .clickable {
                                     exerciseName = preset.name
-                                    setsText = preset.defaultSets.toString()
-                                    repsText = preset.defaultReps.toString()
-                                    weightText = preset.defaultWeightKg.toInt().toString()
-                                    paceText = preset.defaultPace
-                                    durationText = preset.defaultDurationMin.toInt().toString()
+                                    workoutCategory = preset.category
                                     currentMet = preset.met
+                                    if (preset.category == WorkoutCategory.GYM) {
+                                        setsText = preset.defaultSets.toString()
+                                        repsText = preset.defaultReps.toString()
+                                        weightText = preset.defaultWeightKg.toInt().toString()
+                                    } else {
+                                        paceText = preset.defaultPace
+                                        durationText = preset.defaultDurationMin.toInt().toString()
+                                    }
                                     manualCalorieText = ""
                                 },
-                            color = if (isSelected) Color(0xFF16253D) else MaterialTheme.colorScheme.surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.secondary else Color(0xFF26334D))
+                            color = if (isPresetSelected) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isPresetSelected) MaterialTheme.colorScheme.tertiary else Color(0xFF26334D))
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(preset.icon, fontSize = 14.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    preset.name,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isSelected) MaterialTheme.colorScheme.secondary else Color.White
-                                )
+                                Text(preset.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isPresetSelected) MaterialTheme.colorScheme.tertiary else Color.White)
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // 4. Ô NHẬP TÊN BÀI TẬP / MÔN THỂ THAO
+                // 4. FORM NHẬP THÔNG SỐ ĐỘNG
+                Text("Tên bài tập:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(
                     value = exerciseName,
                     onValueChange = { exerciseName = it },
-                    label = { Text("Tên bài tập / môn thể thao") },
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // 5. PHẦN NHẬP LIỆU TƯƠNG ỨNG VỚI PHÂN LOẠI
                 if (workoutCategory == WorkoutCategory.GYM) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = setsText,
                             onValueChange = { setsText = it },
-                            label = { Text("Số Set (mđ: 4)") },
+                            label = { Text("Số hiệp (Sets)") },
                             shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
@@ -2929,7 +3393,7 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = repsText,
                             onValueChange = { repsText = it },
-                            label = { Text("Số Rep (mđ: 10)") },
+                            label = { Text("Số lần (Reps)") },
                             shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
@@ -2937,73 +3401,65 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = weightText,
                             onValueChange = { weightText = it },
-                            label = { Text("Tạ kg (mđ: 50)") },
+                            label = { Text("Tạ (Kg)") },
                             shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
                         )
                     }
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = paceText,
-                            onValueChange = { paceText = it },
-                            label = { Text("Tốc độ / Pace (mđ: 5:30)") },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1.3f)
-                        )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(
                             value = durationText,
                             onValueChange = { durationText = it },
-                            label = { Text("Phút (mđ: 30)") },
+                            label = { Text("Thời gian (Phút)") },
                             shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = paceText,
+                            onValueChange = { paceText = it },
+                            label = { Text("Tốc độ / Pace") },
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Ô NHẬP CALO TỰ TÍNH (NẾU MUỐN GHI ĐÈ)
+                // MANUAL CALORIE OVERRIDE
                 OutlinedTextField(
                     value = manualCalorieText,
                     onValueChange = { manualCalorieText = it },
-                    placeholder = { Text("Tùy chọn: Nhập đè số kcal nếu muốn tự tính", fontSize = 11.sp, color = Color(0xFF64748B)) },
+                    label = { Text("Hoặc tự nhập Calo đốt (kcal - tùy chọn)") },
+                    placeholder = { Text("Để trống sẽ tự tính theo MET & thời gian") },
                     shape = RoundedCornerShape(12.dp),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // 6. SỐ CALO ĐỐT DỰ KIẾN HIỂN THỊ NỔI BẬT
+                // REALTIME CALCULATED BADGE
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF1E283D),
-                    shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.8f))
+                    color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f))
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("🔥", fontSize = 22.sp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text("Số Calo đốt dự kiến:", fontSize = 11.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    if (workoutCategory == WorkoutCategory.GYM) "${setsText.ifBlank { "4" }} sets • ${activeUser.weightKg}kg" else "${durationText.ifBlank { "30" }} phút • ${activeUser.weightKg}kg",
-                                    fontSize = 11.sp,
-                                    color = Color.White
-                                )
-                            }
+                        Column {
+                            Text("Ước tính calo tiêu hao:", fontSize = 12.sp, color = Color.LightGray)
+                            Text("Dựa trên cân nặng ${activeUser.weightKg}kg", fontSize = 10.sp, color = Color(0xFF94A3B8))
                         }
-
                         Text(
-                            "+${calculatedBurnCalories.toInt()} kcal",
+                            "🔥 +${calculatedBurnCalories.toInt()} kcal",
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Black,
                             color = MaterialTheme.colorScheme.tertiary
@@ -3011,52 +3467,59 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
-                // 7. HAI Ô NẰM NGANG Ở CHÂN TRANG (LƯU HÔM NAY VS SET LỊCH)
+                // FOOTER: 2 NÚT HÀNH ĐỘNG [ LƯU HÔM NAY ] VÀ [ SET LỊCH 📅 ]
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Button(
                         onClick = {
-                            val finalName = exerciseName.ifBlank { if (workoutCategory == WorkoutCategory.GYM) "Tập Gym" else "Vận động" }
-                            val detailStr = if (workoutCategory == WorkoutCategory.GYM) {
-                                "${setsText.ifBlank { "4" }} sets x ${repsText.ifBlank { "10" }} reps (${weightText.ifBlank { "50" }}kg)"
+                            val detail = if (workoutCategory == WorkoutCategory.GYM) {
+                                "$setsText sets x $repsText reps (${weightText}kg)"
                             } else {
-                                "Tốc độ: ${paceText.ifBlank { "5:30" }} • ${durationText.ifBlank { "30" }} phút"
+                                "Thời gian: $durationText phút • Tốc độ: $paceText"
                             }
-                            val duration = if (workoutCategory == WorkoutCategory.GYM) (setsText.toFloatOrNull() ?: 4f) * 6f else (durationText.toFloatOrNull() ?: 30f)
-                            val manualCal = manualCalorieText.toFloatOrNull() ?: 0f
-
-                            stateHolder.addWorkoutScheduleMultiDays(finalName, workoutCategory, detailStr, currentMet, duration, manualCal, listOf(uiState.selectedDate))
+                            stateHolder.addWorkoutScheduleMultiDays(
+                                exerciseName,
+                                workoutCategory,
+                                detail,
+                                currentMet,
+                                durationMinutes,
+                                manualCalorieText.toFloatOrNull() ?: 0f,
+                                listOf(uiState.selectedDate)
+                            )
                         },
-                        modifier = Modifier.weight(1.2f).height(50.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
+                        modifier = Modifier.weight(1.3f).height(50.dp)
                     ) {
                         Text("Lưu Hôm Nay", fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.Black)
                     }
 
                     Button(
                         onClick = {
-                            val finalName = exerciseName.ifBlank { if (workoutCategory == WorkoutCategory.GYM) "Tập Gym" else "Vận động" }
-                            val detailStr = if (workoutCategory == WorkoutCategory.GYM) {
-                                "${setsText.ifBlank { "4" }} sets x ${repsText.ifBlank { "10" }} reps (${weightText.ifBlank { "50" }}kg)"
+                            val detail = if (workoutCategory == WorkoutCategory.GYM) {
+                                "$setsText sets x $repsText reps (${weightText}kg)"
                             } else {
-                                "Tốc độ: ${paceText.ifBlank { "5:30" }} • ${durationText.ifBlank { "30" }} phút"
+                                "Thời gian: $durationText phút • Tốc độ: $paceText"
                             }
-                            val duration = if (workoutCategory == WorkoutCategory.GYM) (setsText.toFloatOrNull() ?: 4f) * 6f else (durationText.toFloatOrNull() ?: 30f)
-                            val manualCal = manualCalorieText.toFloatOrNull() ?: 0f
-
-                            stateHolder.setTempWorkout(finalName, workoutCategory, detailStr, currentMet, duration, manualCal)
+                            stateHolder.setTempWorkout(
+                                exerciseName,
+                                workoutCategory,
+                                detail,
+                                currentMet,
+                                durationMinutes,
+                                manualCalorieText.toFloatOrNull() ?: 0f
+                            )
                             stateHolder.navigateTo(Screen.SET_SCHEDULE_WORKOUT)
                         },
-                        modifier = Modifier.weight(1f).height(50.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.weight(1f).height(50.dp)
                     ) {
-                        Text("SET LỊCH 📅", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color.Black)
+                        Text("SET LỊCH 📅", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.secondary)
                     }
                 }
             }
@@ -3064,26 +3527,23 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.6. SET LỊCH CHO KHẨU PHẦN ĂN
+    // 3.7. SET SCHEDULE SCREENS (MULTI-DAY SCHEDULING CHO FOOD VÀ WORKOUT)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun SetScheduleFoodScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
-        val context = LocalContext.current
-        val today = LocalDate.now()
         var selectedDates by remember { mutableStateOf(setOf(uiState.selectedDate)) }
         var activeRepeatType by remember { mutableStateOf<String?>(null) }
-
-        val previewMacro = uiState.previewMacro ?: MacroNutrient(20f, 40f, 10f)
-        val foodName = uiState.previewFoodName.ifBlank { "Món ăn đã chọn" }
 
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("SET LỊCH ĂN UỐNG 📅", fontWeight = FontWeight.Bold) },
+                    title = { Text("Lên Lịch Ăn Đa Ngày 📅", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
+                        ) {
                             Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                         }
                     },
@@ -3099,65 +3559,17 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Món ăn đang lên lịch:", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                            Text(foodName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                        Text("${previewMacro.calories.toInt()} kcal", fontSize = 15.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
+                Text("Chọn những ngày áp dụng món ăn này:", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                Spacer(modifier = Modifier.height(10.dp))
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Chọn thủ công ngày (${selectedDates.size} ngày):", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                val d = selectedDates.firstOrNull() ?: uiState.selectedDate
-                                DatePickerDialog(
-                                    context,
-                                    { _, y, m, day ->
-                                        val picked = LocalDate.of(y, m + 1, day)
-                                        selectedDates = if (picked in selectedDates) selectedDates - picked else selectedDates + picked
-                                    },
-                                    d.year,
-                                    d.monthValue - 1,
-                                    d.dayOfMonth
-                                ).show()
-                            },
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
-                    ) {
-                        Text("📅 + Mở Lịch", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
+                // DẢI CHỌN NGÀY THỦ CÔNG
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    for (offset in -2..14) {
-                        val d = today.plusDays(offset.toLong())
-                        val isSelected = d in selectedDates
+                    for (i in 0..13) {
+                        val d = uiState.selectedDate.plusDays(i.toLong())
+                        val isSelected = selectedDates.contains(d)
                         val dayOfWeekStr = when (d.dayOfWeek) {
                             DayOfWeek.MONDAY -> "T2"
                             DayOfWeek.TUESDAY -> "T3"
@@ -3228,7 +3640,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text("Hàng ngày (30 ngày liên tiếp)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                Text("Áp dụng món ăn vào mọi ngày", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                Text("Tự động điền món ăn vào tất cả các ngày", fontSize = 10.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -3254,7 +3666,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text("Hàng tuần vào $dayOfWeekVi (12 tuần)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                Text("Lặp lại định kỳ vào mỗi $dayOfWeekVi", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                Text("Lặp lại vào mỗi $dayOfWeekVi trong tuần", fontSize = 10.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -3280,7 +3692,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text("Hàng tháng vào ngày ${baseDate.dayOfMonth} (6 tháng)", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                Text("Lặp lại vào ngày ${baseDate.dayOfMonth} hàng tháng", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                Text("Lặp lại vào ngày ${baseDate.dayOfMonth} của các tháng tới", fontSize = 10.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -3290,8 +3702,9 @@ class MainActivity : ComponentActivity() {
 
                 Button(
                     onClick = {
+                        val macro = uiState.previewMacro ?: MacroNutrient(20f, 30f, 5f)
                         val finalDates = selectedDates.ifEmpty { setOf(uiState.selectedDate) }.toList()
-                        stateHolder.commitFoodLogMultiDays(foodName, previewMacro, finalDates)
+                        stateHolder.commitFoodLogMultiDays(uiState.previewFoodName.ifBlank { "Khẩu phần ăn" }, macro, finalDates)
                     },
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(14.dp),
@@ -3303,26 +3716,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // 3.7. SET LỊCH CHO TẬP LUYỆN
-    // -----------------------------------------------------------------------------------------
-
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun SetScheduleWorkoutScreen(stateHolder: CalorieTrackerStateHolder, uiState: AppState) {
-        val context = LocalContext.current
-        val today = LocalDate.now()
         var selectedDates by remember { mutableStateOf(setOf(uiState.selectedDate)) }
         var activeRepeatType by remember { mutableStateOf<String?>(null) }
-
-        val workoutName = uiState.tempWorkoutName.ifBlank { "Bài tập đã chọn" }
 
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("SET LỊCH TẬP LUYỆN 📅", fontWeight = FontWeight.Bold) },
+                    title = { Text("Lên Lịch Tập Đa Ngày 📅", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp).clickable { stateHolder.navigateBack() }
+                        ) {
                             Text("← Quay lại", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                         }
                     },
@@ -3338,59 +3745,17 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text("Bài tập lên lịch:", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        Text(workoutName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        Text(uiState.tempWorkoutDetail, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
-                    }
-                }
+                Text("Chọn những ngày áp dụng bài tập này:", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                Spacer(modifier = Modifier.height(10.dp))
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Chọn thủ công ngày (${selectedDates.size} ngày):", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                val d = selectedDates.firstOrNull() ?: uiState.selectedDate
-                                DatePickerDialog(
-                                    context,
-                                    { _, y, m, day ->
-                                        val picked = LocalDate.of(y, m + 1, day)
-                                        selectedDates = if (picked in selectedDates) selectedDates - picked else selectedDates + picked
-                                    },
-                                    d.year,
-                                    d.monthValue - 1,
-                                    d.dayOfMonth
-                                ).show()
-                            },
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
-                    ) {
-                        Text("📅 + Mở Lịch", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
+                // DẢI CHỌN NGÀY THỦ CÔNG
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    for (offset in -2..14) {
-                        val d = today.plusDays(offset.toLong())
-                        val isSelected = d in selectedDates
+                    for (i in 0..13) {
+                        val d = uiState.selectedDate.plusDays(i.toLong())
+                        val isSelected = selectedDates.contains(d)
                         val dayOfWeekStr = when (d.dayOfWeek) {
                             DayOfWeek.MONDAY -> "T2"
                             DayOfWeek.TUESDAY -> "T3"
@@ -3545,7 +3910,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // 3.8. ANALYTICS SCREEN
+    // 3.8. ANALYTICS SCREEN (PHÂN TÍCH DINH DƯỠNG & TIẾN TRÌNH CÂN NẶNG)
     // -----------------------------------------------------------------------------------------
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -3599,86 +3964,201 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                // THỐNG KÊ CÂN NẶNG & BMR
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(16.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Biểu Đồ Nạp Calo (${user.name})", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                            Text("Mục tiêu: ${user.targetCaloriesIn.toInt()} kcal", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("⚖️", fontSize = 18.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Tiến trình Cân Nặng & Trao Đổi Chất", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
                         }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        val logs = analytics.logs
-                        val targetCalorie = user.targetCaloriesIn
-                        val maxCalorie = maxOf((logs.maxOfOrNull { it.totalCaloriesIn } ?: 0f), targetCalorie * 1.3f, 2500f)
-
-                        Canvas(modifier = Modifier.fillMaxWidth().height(160.dp)) {
-                            val width = size.width
-                            val height = size.height
-                            val barCount = logs.size
-                            val barWidth = (width / barCount) * 0.65f
-                            val gap = (width - (barWidth * barCount)) / (barCount + 1)
-
-                            val targetY = height - (targetCalorie / maxCalorie * height)
-                            drawLine(
-                                color = Color(0xFF10B981),
-                                start = Offset(0f, targetY),
-                                end = Offset(width, targetY),
-                                strokeWidth = 2.dp.toPx(),
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 10f), 0f)
-                            )
-
-                            logs.forEachIndexed { index, log ->
-                                val barHeight = (log.totalCaloriesIn / maxCalorie) * height
-                                val x = gap + index * (barWidth + gap)
-                                val y = height - barHeight
-                                val barColor = if (log.totalCaloriesIn > targetCalorie * 1.15f) Color(0xFFEF4444) else Color(0xFF38BDF8)
-
-                                drawRoundRect(
-                                    color = barColor,
-                                    topLeft = Offset(x, y),
-                                    size = Size(barWidth, barHeight),
-                                    cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
-                                )
-                            }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• Cân nặng hiện tại:", fontSize = 12.sp, color = Color.LightGray)
+                            Text("${user.weightKg} kg", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• BMR (Đốt tự nhiên):", fontSize = 12.sp, color = Color.LightGray)
+                            Text("${user.bmr.toInt()} kcal/ngày", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("• TDEE (Tiêu thụ cơ bản):", fontSize = 12.sp, color = Color.LightGray)
+                            Text("${user.tdee.toInt()} kcal/ngày", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
+                // BIỂU ĐỒ CALO NẠP
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF0F1A2E),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("✨", fontSize = 20.sp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Lời Khuyên Dành Cho ${user.name}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                        Text("Biểu đồ Calo nạp qua các ngày:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        val maxCal = 2800f
+                        Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
+                            val w = size.width
+                            val h = size.height
+                            val logs = analytics.logs
+                            if (logs.isNotEmpty()) {
+                                val step = w / logs.size.toFloat()
+                                val targetY = h - (user.targetCaloriesIn / maxCal) * h
+
+                                drawLine(
+                                    color = Color.Red.copy(alpha = 0.5f),
+                                    start = Offset(0f, targetY),
+                                    end = Offset(w, targetY),
+                                    strokeWidth = 2f,
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f))
+                                )
+
+                                logs.forEachIndexed { index, log ->
+                                    val barH = (log.totalCaloriesIn / maxCal).coerceIn(0f, 1f) * h
+                                    drawRoundRect(
+                                        color = if (log.totalCaloriesIn > user.targetCaloriesIn) Color(0xFFEF4444) else Color(0xFF10B981),
+                                        topLeft = Offset(index * step + (step * 0.15f), h - barH),
+                                        size = Size(step * 0.7f, barH),
+                                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                    )
+                                }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(text = analytics.adviceText, fontSize = 13.sp, lineHeight = 20.sp, color = Color(0xFFE2E8F0))
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Divider(color = Color(0xFF26334D))
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Dung sai WHO: ±12%", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                            Text("Đường đỏ nét đứt: Target ${user.targetCaloriesIn.toInt()} kcal", fontSize = 10.sp, color = Color.Red.copy(alpha = 0.7f))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // LỜI KHUYÊN WHO
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF0C121E),
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF26334D))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "ℹ️ Dữ liệu được tính toán riêng biệt cho từng người dùng dựa trên độ lệch chuẩn (Std Dev).",
-                            fontSize = 10.sp,
-                            color = Color(0xFF94A3B8)
+                            analytics.adviceText,
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = Color(0xFFCBD5E1)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 3.9. GHOST BAR PROGRESS COMPONENT (VƯỢT CHỈ TIÊU ĐỎ RỰC)
+    // -----------------------------------------------------------------------------------------
+
+    @Composable
+    fun GhostBarProgressItem(
+        label: String,
+        current: Float,
+        preview: Float,
+        target: Float,
+        unit: String,
+        baseColor: Color
+    ) {
+        val totalWithPreview = current + preview
+        val isOverflow = target > 0f && totalWithPreview > target
+        val overflowAmount = (totalWithPreview - target).coerceAtLeast(0f)
+
+        val animatedCurrentProgress by animateFloatAsState(
+            targetValue = if (target > 0f) (current / target).coerceIn(0f, 1f) else 0f,
+            animationSpec = tween(400)
+        )
+        val animatedGhostProgress by animateFloatAsState(
+            targetValue = if (target > 0f) (totalWithPreview / target).coerceIn(0f, 1f) else 0f,
+            animationSpec = tween(400)
+        )
+
+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
+                    if (preview > 0f) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            "+${preview.toInt()} $unit",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.tertiary
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(30.dp))
+                if (isOverflow) {
+                    Text(
+                        "${totalWithPreview.toInt()} / ${target.toInt()} + ${overflowAmount.toInt()} $unit",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFFEF4444)
+                    )
+                } else {
+                    Text(
+                        "${totalWithPreview.toInt()} / ${target.toInt()} $unit",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF94A3B8)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(7.dp)
+                    .clip(RoundedCornerShape(3.5.dp))
+                    .background(Color(0xFF1E283D))
+            ) {
+                if (animatedGhostProgress > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(animatedGhostProgress)
+                            .fillMaxHeight()
+                            .background(
+                                if (isOverflow) Color(0xFFEF4444).copy(alpha = 0.5f)
+                                else baseColor.copy(alpha = 0.4f)
+                            )
+                    )
+                }
+
+                if (animatedCurrentProgress > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(animatedCurrentProgress)
+                            .fillMaxHeight()
+                            .background(
+                                if (isOverflow) Color(0xFFEF4444)
+                                else baseColor
+                            )
+                    )
+                }
             }
         }
     }
